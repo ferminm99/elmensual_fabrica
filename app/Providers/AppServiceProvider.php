@@ -1,7 +1,10 @@
 <?php
 
 namespace App\Providers;
-
+use App\Models\ProductionOrder;
+use App\Observers\ProductionOrderObserver;
+use App\Models\StockMovement;
+use App\Observers\StockMovementObserver;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -20,5 +23,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         //
+        ProductionOrder::observe(ProductionOrderObserver::class);
+        StockMovement::observe(StockMovementObserver::class);
     }
 }
