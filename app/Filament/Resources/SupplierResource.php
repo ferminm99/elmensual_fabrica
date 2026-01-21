@@ -3,6 +3,7 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\SupplierResource\Pages;
+use App\Filament\Resources\ProductionOrderResource\RelationManagers\ActivitiesRelationManager;
 use App\Models\Supplier;
 use App\Models\CompanyAccount;
 use App\Models\Transaction;
@@ -21,7 +22,7 @@ class SupplierResource extends Resource
     
     protected static ?string $modelLabel = 'Proveedor';
     protected static ?string $pluralModelLabel = 'Proveedores';
-    protected static ?string $navigationGroup = 'Compras'; // Menú Separado
+    protected static ?string $navigationGroup = 'Producción';
 
     public static function form(Form $form): Form
     {
@@ -191,6 +192,13 @@ class SupplierResource extends Resource
             'index' => Pages\ListSuppliers::route('/'),
             'create' => Pages\CreateSupplier::route('/create'),
             'edit' => Pages\EditSupplier::route('/{record}/edit'),
+        ];
+    }
+
+    public static function getRelations(): array
+    {
+        return [
+            ActivitiesRelationManager::class,
         ];
     }
 }

@@ -12,7 +12,18 @@ class Transaction extends Model
 {
     use HasAccountingType;
 
-    protected $guarded = [];
+    // Definimos todo en fillable para evitar errores de asignación masiva
+    protected $fillable = [
+        'company_account_id', 
+        'client_id',
+        'supplier_id', // <--- AGREGADO (Para pagos a proveedores)
+        'type', 
+        'amount', 
+        'description', 
+        'origin', 
+        'payment_details',
+        'concept' 
+    ];
 
     protected $casts = [
         'amount' => 'decimal:2',
@@ -21,24 +32,25 @@ class Transaction extends Model
         'payment_details' => 'array',
     ];
 
-    // AGREGAMOS 'concept' AQUÍ PARA QUE NO REBOTE
-    protected $fillable = [
-        'company_account_id', 
-        'type', 
-        'amount', 
-        'description', 
-        'origin', 
-        'payment_details',
-        'concept' // <--- AGREGADO NUEVO
-    ];
-    
     public function account(): BelongsTo
     {
         return $this->belongsTo(CompanyAccount::class, 'company_account_id');
     }
 
+    // Alias para Filament que a veces busca companyAccount
     public function companyAccount(): BelongsTo
     {
-        return $this->belongsTo(CompanyAccount::class);
+        return $this->belongsTo(CompanyAccount::class, 'company_account_id');
+    }
+    
+    public function client(): BelongsTo
+    {
+        return $this->belongsTo(Client::class);
+    }
+
+    // Relación con Proveedor (Nueva)
+    public function supplier(): BelongsTo
+    {
+        return $this->belongsTo(Supplier::class);
     }
 }

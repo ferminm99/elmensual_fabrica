@@ -6,6 +6,7 @@ use App\Filament\Resources\ArticleResource\Pages;
 // Importamos los Managers de Relación
 use App\Filament\Resources\ArticleResource\RelationManagers\RecipesRelationManager;
 use App\Filament\Resources\ArticleResource\RelationManagers\SkusRelationManager; 
+use App\Filament\Resources\ProductionOrderResource\RelationManagers\ActivitiesRelationManager;
 use App\Models\Article;
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -53,6 +54,12 @@ class ArticleResource extends Resource
                                 Forms\Components\TextInput::make('name')->required()->label('Nueva Categoría'),
                             ])
                             ->required(),
+
+                        Forms\Components\TextInput::make('average_consumption')
+                            ->label('Consumo Promedio de Tela')
+                            ->helperText('¿Cuántos metros/kilos consume 1 unidad? (Ej: 1.20)')
+                            ->numeric()
+                            ->step(0.01),
                         
                         Forms\Components\TextInput::make('base_cost')
                             ->label('Costo Base')
@@ -162,6 +169,7 @@ class ArticleResource extends Resource
             // AQUÍ AGREGAMOS LA GESTIÓN DE SKUS (La tabla de abajo)
             SkusRelationManager::class, 
             RecipesRelationManager::class,
+            ActivitiesRelationManager::class,
         ];
     }
 

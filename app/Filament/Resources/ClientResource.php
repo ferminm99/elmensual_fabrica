@@ -3,7 +3,9 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\ClientResource\Pages;
+use App\Filament\Resources\ClientResource\RelationManagers\PaymentsRelationManager;
 use App\Filament\Resources\ClientResource\RelationManagers\OrdersRelationManager;
+use App\Filament\Resources\ProductionOrderResource\RelationManagers\ActivitiesRelationManager;
 use App\Models\Client;
 use App\Models\CompanyAccount;
 use App\Models\Transaction;
@@ -63,13 +65,13 @@ class ClientResource extends Resource
 
                 Forms\Components\Section::make('Saldos de Cuenta Corriente')
                     ->schema([
-                        Forms\Components\TextInput::make('account_balance_fiscal')
+                        Forms\Components\TextInput::make('fiscal_debt')
                             ->label('Saldo Blanco (Fiscal)')
                             ->prefix('$')
                             ->numeric()
                             ->default(0),
 
-                        Forms\Components\TextInput::make('account_balance_internal')
+                        Forms\Components\TextInput::make('internal_debt')
                             ->label('Saldo Negro (Interno)')
                             ->prefix('$')
                             ->numeric()
@@ -88,197 +90,225 @@ class ClientResource extends Resource
                     ->weight('bold')
                     ->description(fn (Client $record) => "Desc: {$record->default_discount}%"),
 
-                // 1. DEUDA BLANCA
-                Tables\Columns\TextColumn::make('account_balance_fiscal')
+                // 1. DEUDA BLANCA (Nombres reales de la DB)
+                Tables\Columns\TextColumn::make('fiscal_debt') 
                     ->label('Deuda Fiscal')
                     ->money('ARS')
                     ->sortable()
                     ->color(fn (string $state): string => $state > 0 ? 'danger' : 'success'),
 
-                // 2. DEUDA NEGRA (OCULTA POR DEFECTO)
-                Tables\Columns\TextColumn::make('account_balance_internal')
+                // 2. DEUDA NEGRA (Nombres reales de la DB)
+                Tables\Columns\TextColumn::make('internal_debt')
                     ->label('Deuda Interna')
                     ->money('ARS')
                     ->color('warning')
-                    ->toggleable(isToggledHiddenByDefault: true), 
+                    ->toggleable(isToggledHiddenByDefault: false),
 
-                // 3. DEUDA REAL (SUMA)
+                // 3. DEUDA REAL (Suma de las dos columnas reales)
                 Tables\Columns\TextColumn::make('real_balance')
                     ->label('TOTAL REAL')
                     ->money('ARS')
-                    ->state(fn (Client $record) => $record->account_balance_fiscal + $record->account_balance_internal)
+                    ->state(fn (Client $record) => $record->fiscal_debt + $record->internal_debt)
                     ->weight('black')
-                    ->color('danger')
-                    ->toggleable(isToggledHiddenByDefault: true),
+                    ->color('danger'),
             ])
             ->actions([
                 Tables\Actions\EditAction::make(),
 
-                // --- BOTÓN DE COBRO DEFINITIVO (ESTRATEGIA + DETALLE TÉCNICO) ---
+                // --- BOTÓN DE COBRO ---
                 Tables\Actions\Action::make('register_payment')
                     ->label('Cobrar')
                     ->icon('heroicon-o-banknotes')
                     ->color('success')
                     ->modalWidth('2xl')
                     ->form([
-                        // SECCIÓN 1: CUÁNTO Y CÓMO IMPUTAMOS
+                        // SECCIÓN 1: ESTRATEGIA (Sin cambios)
                         Forms\Components\Section::make('Estrategia de Cobro')
-                            ->description('Define el monto y cómo afecta a la cuenta corriente.')
                             ->schema([
                                 Forms\Components\TextInput::make('amount')
                                     ->label('Monto TOTAL Recibido')
                                     ->numeric()
                                     ->prefix('$')
                                     ->required(),
-                                
                                 Forms\Components\Select::make('split_strategy')
                                     ->label('Imputación')
                                     ->options([
                                         'fiscal_100' => '100% Fiscal (Blanco)',
-                                        'split_50_50' => 'Mix 50% / 50% (Mitad y Mitad)',
+                                        'split_50_50' => 'Mix 50% / 50%',
                                         'internal_100' => '100% Interno (Negro)',
                                     ])
                                     ->default('fiscal_100')
                                     ->required(),
                             ])->columns(2),
 
-                        // SECCIÓN 2: DETALLES DEL DINERO (ORIGEN Y DESTINO)
-                        Forms\Components\Section::make('Ingreso de Dinero (Tesorería)')
+                        // SECCIÓN 2: FORMA DE PAGO
+                        Forms\Components\Section::make('Forma de Pago')
                             ->schema([
                                 Forms\Components\Select::make('payment_method')
-                                    ->label('Forma de Pago')
+                                    ->label('Método')
                                     ->options([
                                         'cash' => 'Efectivo',
-                                        'transfer' => 'Transferencia Bancaria',
-                                        'check' => 'Cheque Físico / E-Cheq',
+                                        'transfer' => 'Transferencia',
+                                        'check' => 'Cheque', 
                                     ])
-                                    ->reactive()
+                                    ->live()
+                                    ->afterStateUpdated(function ($state, callable $set, Client $record) {
+                                        // AUTOCOMPLETADO INTELIGENTE
+                                        if ($state === 'transfer') {
+                                            $lastTx = Transaction::where('description', 'like', "%{$record->name}%")
+                                                ->whereNotNull('payment_details->client_cbu')
+                                                ->latest()
+                                                ->first();
+
+                                            if ($lastTx) {
+                                                $details = $lastTx->payment_details;
+                                                $set('client_bank', $details['client_bank'] ?? '');
+                                                $set('client_cbu', $details['client_cbu'] ?? '');
+                                                $set('client_alias', $details['client_alias'] ?? '');
+                                            }
+                                        }
+                                    })
                                     ->required(),
 
-                                // --- DATOS ESPECÍFICOS DE TRANSFERENCIA ---
+                                // --- CAMPOS DE TRANSFERENCIA (2 COLUMNAS, ORDENADO) ---
                                 Forms\Components\Group::make([
                                     Forms\Components\Grid::make(2)->schema([
+                                        // FILA 1
                                         Forms\Components\TextInput::make('client_bank')
-                                            ->label('Banco Origen (Cliente)')
+                                            ->label('Banco Origen')
                                             ->placeholder('Ej: Galicia'),
+                                        
                                         Forms\Components\TextInput::make('transfer_id')
                                             ->label('ID Comprobante')
-                                            ->required(),
+                                            ->placeholder('Opcional'), // Ya no es required
+
+                                        // FILA 2
                                         Forms\Components\TextInput::make('client_cbu')
-                                            ->label('CBU / Alias Origen')
-                                            ->columnSpanFull(),
+                                            ->label('CBU Origen')
+                                            ->numeric()
+                                            // Obligatorio solo si no puso Alias
+                                            ->requiredWithout('client_alias') 
+                                            ->validationAttribute('CBU'),
+
+                                        Forms\Components\TextInput::make('client_alias')
+                                            ->label('Alias Origen')
+                                            // Obligatorio solo si no puso CBU
+                                            ->requiredWithout('client_cbu')
+                                            ->validationAttribute('Alias'),
                                     ]),
                                 ])->visible(fn (Forms\Get $get) => $get('payment_method') === 'transfer'),
 
-                                // --- DATOS ESPECÍFICOS DE CHEQUES ---
+                                // --- CAMPOS DE CHEQUE (Sin cambios) ---
                                 Forms\Components\Group::make([
                                     Forms\Components\Grid::make(2)->schema([
-                                        Forms\Components\TextInput::make('check_bank')
-                                            ->label('Banco del Cheque')
-                                            ->required(),
-                                        Forms\Components\TextInput::make('check_number')
-                                            ->label('N° Cheque')
-                                            ->required(),
-                                        Forms\Components\DatePicker::make('check_due_date')
-                                            ->label('Fecha de Cobro')
-                                            ->required(),
-                                        Forms\Components\TextInput::make('check_owner')
-                                            ->label('Firmante / CUIT')
-                                            ->required(),
-                                        Forms\Components\Toggle::make('is_echeq')
-                                            ->label('Es E-Cheq')
-                                            ->inline(false),
+                                        Forms\Components\TextInput::make('check_bank')->label('Banco')->required(),
+                                        Forms\Components\TextInput::make('check_number')->label('N° Cheque')->required(),
+                                        Forms\Components\DatePicker::make('check_payment_date')->label('Fecha Cobro')->required()->default(now()->addDays(30)),
+                                        Forms\Components\TextInput::make('check_owner')->label('Firmante / CUIT')->required(),
+                                        Forms\Components\Toggle::make('is_echeq')->label('Es E-Cheq'),
                                     ]),
                                 ])->visible(fn (Forms\Get $get) => $get('payment_method') === 'check'),
 
-                                // --- DESTINO (NUESTRA CUENTA) ---
+                                // CUENTA DESTINO
                                 Forms\Components\Select::make('company_account_id')
                                     ->label('Cuenta Destino (Caja/Banco)')
                                     ->options(CompanyAccount::all()->pluck('name', 'id'))
                                     ->visible(fn (Forms\Get $get) => in_array($get('payment_method'), ['cash', 'transfer']))
                                     ->required(fn (Forms\Get $get) => in_array($get('payment_method'), ['cash', 'transfer'])),
                                 
-                                Forms\Components\Textarea::make('notes')
-                                    ->label('Notas Internas')
-                                    ->placeholder('Observaciones...'),
+                                Forms\Components\Textarea::make('notes')->label('Notas'),
                             ]),
                     ])
                     ->action(function (array $data, Client $record) {
                         $totalAmount = $data['amount'];
                         $strategy = $data['split_strategy'];
 
-                        // 1. CÁLCULO MATEMÁTICO DE LA ESTRATEGIA
-                        $amountFiscal = 0;
-                        $amountInternal = 0;
+                        // 1. IMPUTACIÓN DE DEUDA GLOBAL (Esto lo mantenemos igual, es tu saldo general)
+                        $amountFiscal = 0; $amountInternal = 0;
+                        if ($strategy === 'fiscal_100') $amountFiscal = $totalAmount;
+                        elseif ($strategy === 'internal_100') $amountInternal = $totalAmount;
+                        elseif ($strategy === 'split_50_50') { $amountFiscal = $totalAmount/2; $amountInternal = $totalAmount/2; }
 
-                        if ($strategy === 'fiscal_100') {
-                            $amountFiscal = $totalAmount;
-                        } elseif ($strategy === 'internal_100') {
-                            $amountInternal = $totalAmount;
-                        } elseif ($strategy === 'split_50_50') {
-                            $amountFiscal = $totalAmount / 2;
-                            $amountInternal = $totalAmount / 2;
+                        if ($amountFiscal > 0) {
+                            $record->decrement('fiscal_debt', $amountFiscal);
+                            // ---> MAGIA FIFO FISCAL <---
+                            $record->distributePayment($amountFiscal, 'Fiscal');
                         }
-
-                        // 2. DESCONTAR DEUDA
-                        if ($amountFiscal > 0) $record->decrement('account_balance_fiscal', $amountFiscal);
-                        if ($amountInternal > 0) $record->decrement('account_balance_internal', $amountInternal);
                         
-                        // 3. REGISTRAR TRANSACCIÓN (Efectivo/Transferencia)
-                        if (in_array($data['payment_method'], ['cash', 'transfer'])) {
+                        if ($amountInternal > 0) {
+                            $record->decrement('internal_debt', $amountInternal);
+                            // ---> MAGIA FIFO INTERNA <---
+                            $record->distributePayment($amountInternal, 'Internal');
+                        }
+                        // 2. REGISTRAR EL PAGO
+                        if ($data['payment_method'] === 'check') {
+                            
+                            // A. CREAR EL CHEQUE FÍSICO (Para la Cartera)
+                            $check = Check::create([
+                                'client_id' => $record->id,
+                                'bank_name' => $data['check_bank'],
+                                'number' => $data['check_number'],
+                                'owner' => $data['check_owner'],
+                                'amount' => $totalAmount,
+                                'payment_date' => $data['check_payment_date'],
+                                'status' => 'InPortfolio',
+                                'type' => 'ThirdParty',
+                                'is_echeq' => $data['is_echeq'] ?? false,
+                            ]);
+
+                            // B. CREAR LA TRANSACCIÓN (Para el Historial del Cliente) <-- ESTO FALTABA
+                            Transaction::create([
+                                'client_id' => $record->id,
+                                'company_account_id' => null, // No está en banco, está en mano
+                                'type' => 'Income',
+                                'amount' => $totalAmount,
+                                'description' => "Pago con Cheque #{$data['check_number']} ({$data['check_bank']})",
+                                'concept' => 'Cobro Cliente',
+                                'origin' => $strategy === 'internal_100' ? 'Internal' : 'Fiscal',
+                                'payment_details' => ['check_id' => $check->id], // Vinculamos ID
+                            ]);
+
+                            Notification::make()->title('Cheque registrado en Cartera e Historial')->success()->send();
+
+                        } else {
+                            // PAGO CAJA / TRANSFERENCIA
                             $account = CompanyAccount::find($data['company_account_id']);
                             
-                            // Preparamos los detalles extra (JSON)
                             $details = [];
                             if ($data['payment_method'] === 'transfer') {
                                 $details = [
                                     'client_bank' => $data['client_bank'] ?? null,
-                                    'transfer_id' => $data['transfer_id'] ?? null,
-                                    'client_cbu'  => $data['client_cbu'] ?? null,
+                                    'client_cbu' => $data['client_cbu'] ?? null,
+                                    'client_alias' => $data['client_alias'] ?? null,
+                                    'transfer_id' => $data['transfer_id'] ?? null
                                 ];
                             }
 
                             Transaction::create([
                                 'company_account_id' => $account->id,
+                                'client_id' => $record->id,
                                 'type' => 'Income',
                                 'amount' => $totalAmount,
                                 'description' => "Cobro a {$record->name} ({$strategy})",
-                                'concept' => "Cobro Cliente", // Para que no chille MySQL
+                                'concept' => 'Cobro Cliente',
                                 'origin' => $strategy === 'internal_100' ? 'Internal' : 'Fiscal',
-                                'payment_details' => $details, // <--- Aquí guardamos la info técnica
+                                'payment_details' => $details, 
                             ]);
 
                             $account->increment('current_balance', $totalAmount);
+                            
+                            Notification::make()->title('Pago registrado en cuenta')->success()->send();
                         }
-
-                        // 4. REGISTRAR CHEQUE (Si aplica)
-                        if ($data['payment_method'] === 'check') {
-                             Check::create([
-                                'type' => 'ThirdParty',
-                                'status' => 'InPortfolio', 
-                                'amount' => $totalAmount,
-                                'bank_name' => $data['check_bank'],
-                                'number' => $data['check_number'],
-                                'due_date' => $data['check_due_date'],
-                                'owner' => $data['check_owner'],
-                                'client_id' => $record->id,
-                                // Podrías agregar 'is_echeq' si lo tienes en la BD
-                            ]);
-                        }
-
-                        Notification::make()
-                            ->title('Cobro registrado correctamente')
-                            ->body("Se imputaron $ " . number_format($amountFiscal, 0) . " al Blanco y $ " . number_format($amountInternal, 0) . " al Negro.")
-                            ->success()
-                            ->send();
                     }),
-            ]);
-    }
+        ]);
+}
 
     public static function getRelations(): array
     {
         return [
             OrdersRelationManager::class,
+            ActivitiesRelationManager::class,
+            PaymentsRelationManager::class,
         ];
     }
 

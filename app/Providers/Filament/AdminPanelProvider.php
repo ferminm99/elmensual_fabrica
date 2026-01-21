@@ -31,6 +31,7 @@ class AdminPanelProvider extends PanelProvider
                 'primary' => Color::Amber,
             ])
             
+            ->unsavedChangesAlerts()
             // --- AGREGAR ESTA LÍNEA ---
             ->sidebarCollapsibleOnDesktop() 
             // ---------------------------

@@ -18,6 +18,7 @@ class SalarySettlementResource extends Resource
     protected static ?string $model = SalarySettlement::class;
 
     protected static ?string $navigationIcon = 'heroicon-o-rectangle-stack';
+    protected static ?string $navigationGroup = 'Tesorería';
 
     public static function form(Form $form): Form
     {

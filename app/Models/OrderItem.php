@@ -9,15 +9,25 @@ class OrderItem extends Model
 {
     protected $guarded = [];
 
-    protected $casts = [
-        'unit_price' => 'decimal:2',
-    ];
-
+    // Relación con la Orden Padre
     public function order(): BelongsTo
     {
         return $this->belongsTo(Order::class);
     }
 
+    // Relación con el ARTÍCULO (Esto arregla el "Artículo Desconocido")
+    public function article(): BelongsTo
+    {
+        return $this->belongsTo(Article::class);
+    }
+
+    // Relación con el COLOR (Esto arregla el "Color Indefinido")
+    public function color(): BelongsTo
+    {
+        return $this->belongsTo(Color::class);
+    }
+
+    // Relación con el SKU (Talles)
     public function sku(): BelongsTo
     {
         return $this->belongsTo(Sku::class);

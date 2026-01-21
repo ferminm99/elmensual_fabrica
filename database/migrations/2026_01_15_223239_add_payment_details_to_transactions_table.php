@@ -6,20 +6,20 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::table('transactions', function (Blueprint $table) {
-            $table->json('payment_details')->nullable()->after('amount');
+            if (!Schema::hasColumn('transactions', 'client_id')) {
+                $table->foreignId('client_id')->nullable()->after('id')->constrained()->nullOnDelete();
+            }
         });
     }
 
     public function down(): void
     {
         Schema::table('transactions', function (Blueprint $table) {
-            $table->dropColumn('payment_details');
+            $table->dropForeign(['client_id']);
+            $table->dropColumn('client_id');
         });
     }
 };

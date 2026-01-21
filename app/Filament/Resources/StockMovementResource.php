@@ -21,7 +21,7 @@ class StockMovementResource extends Resource
     // Etiquetas en Español
     protected static ?string $modelLabel = 'Movimiento de Stock';
     protected static ?string $pluralModelLabel = 'Ajustes de Inventario'; // <--- ERROR CORREGIDO (saqué el punto)
-    protected static ?string $navigationGroup = 'Compras & Stock';
+    protected static ?string $navigationGroup = 'Producción';
 
     public static function form(Form $form): Form
     {
