@@ -19,21 +19,21 @@ class Order extends Model
 
     protected $fillable = [
         'client_id',
-        'invoice_id', // Si usas facturas
+        'parent_id',    // Para vincular con el pedido original
+        'invoice_id', 
         'total_amount',
-        'amount_paid', // <--- EL NUEVO QUE NECESITAMOS
+        'amount_paid', 
         'status',
-        'billing_type', // fiscal / informal
+        'billing_type', 
         'order_date',
         'observations',
-        // Agregá cualquier otro campo que tengas en tu tabla orders
     ];
 
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()
-            ->logAll() // ¡Espía TODO!
-            ->logOnlyDirty() // Solo guarda si hubo cambios reales
+            ->logAll()
+            ->logOnlyDirty()
             ->dontSubmitEmptyLogs();
     }
     
@@ -42,6 +42,8 @@ class Order extends Model
         'status' => OrderStatus::class, 
         'order_date' => 'date',
     ];
+
+    // --- RELACIONES ---
 
     public function client(): BelongsTo
     {
@@ -56,6 +58,17 @@ class Order extends Model
     public function invoice(): HasOne
     {
         return $this->hasOne(Invoice::class);
+    }
+
+    // Relaciones para Pedidos Vinculados
+    public function parentOrder(): BelongsTo
+    {
+        return $this->belongsTo(Order::class, 'parent_id');
+    }
+
+    public function subOrders(): HasMany
+    {
+        return $this->hasMany(Order::class, 'parent_id');
     }
     
     // Helper to calculate total

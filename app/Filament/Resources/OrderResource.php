@@ -308,24 +308,63 @@ class OrderResource extends Resource
         return $table
             ->columns([
                 Tables\Columns\TextColumn::make('id')->label('#')->sortable(),
-                Tables\Columns\TextColumn::make('client.name')->label('Cliente')->weight('bold')->searchable(),
+                Tables\Columns\TextColumn::make('client.name')
+                    ->label('Cliente')
+                    ->weight('bold')
+                    ->searchable()
+                    // Mostramos Localidad y Zona debajo del nombre
+                    ->description(fn (Order $record) => 
+                        ($record->client->locality?->name ?? 'Sin Localidad') . ' - ' . 
+                        ($record->client->locality?->zone?->name ?? 'Sin Zona')
+                    ),
                 Tables\Columns\TextColumn::make('order_date')->date('d/m/Y')->label('Fecha'),
-                Tables\Columns\SelectColumn::make('status')->options(OrderStatus::class)->label('Estado'),
+                
+                // STATUS CON COLORES (BADGE)
+                Tables\Columns\TextColumn::make('status')
+                    ->label('Estado')
+                    ->badge() // Esto activa los colores del Enum
+                    ->formatStateUsing(fn ($state) => $state->getLabel()),
+
                 Tables\Columns\TextColumn::make('total_amount')->label('Total')->money('ARS')->weight('bold'),
             ])
-            ->defaultSort('created_at', 'desc')
+            ->filters([
+                // Filtro por Zona para la secretaria
+                Tables\Filters\SelectFilter::make('zone')
+                    ->label('Zona')
+                    ->relationship('client.locality.zone', 'name'),
+            ])
             ->actions([
-                Tables\Actions\EditAction::make(),
-                Tables\Actions\Action::make('facturar')->label('Cerrar Pedido')->icon('heroicon-o-check')->color('success')->visible(fn (Order $record) => $record->status !== OrderStatus::Delivered)->requiresConfirmation()
-                    ->action(function (Order $record) {
-                        $total = $record->items->sum(function($item) {
-                            if ($item->quantity > 0) { $item->subtotal = $item->quantity * $item->unit_price; $item->save(); return $item->subtotal; }
-                            $item->delete(); return 0;
-                        });
-                        $record->update(['total_amount' => $total, 'status' => OrderStatus::Delivered]);
-                        $client = $record->client;
-                        $record->billing_type === 'fiscal' ? $client->increment('fiscal_debt', $total) : $client->increment('internal_debt', $total);
-                        Notification::make()->title('Cerrado')->body('$'.number_format($total,0))->success()->send();
+                // EL EDITAR SOLO SI ES DRAFT (BORRADOR)
+                Tables\Actions\EditAction::make()
+                    ->visible(fn (Order $record) => $record->status === OrderStatus::Draft),
+                
+                // ACCIÓN INDIVIDUAL PARA MANDAR A DEPÓSITO
+                Tables\Actions\Action::make('send_to_warehouse')
+                    ->label('Mandar a Depósito')
+                    ->icon('heroicon-o-arrow-right-circle')
+                    ->color('warning')
+                    ->requiresConfirmation()
+                    ->visible(fn (Order $record) => $record->status === OrderStatus::Draft)
+                    ->action(fn (Order $record) => $record->update(['status' => OrderStatus::Processing])),
+            ])
+            ->bulkActions([
+                // ACCIÓN MASIVA (Seleccionar varios y mandar)
+                Tables\Actions\BulkAction::make('bulk_warehouse')
+                    ->label('Mandar seleccionados a Depósito')
+                    ->icon('heroicon-o-truck')
+                    ->color('warning')
+                    ->action(function (\Illuminate\Support\Collection $records, Tables\Actions\BulkAction $action) {
+                        // Lógica de confirmación manual o ejecución
+                        $records->each(fn ($record) => $record->update(['status' => OrderStatus::Processing]));
+                        Notification::make()->title('Pedidos enviados a depósito')->success()->send();
+                    })
+                    ->requiresConfirmation()
+                    // Aquí agregamos el mensaje dinámico
+                    ->modalDescription(function (\Illuminate\Support\Collection $records, $livewire) {
+                        $countSelected = $records->count();
+                        // Intentamos obtener cuántos pedidos Draft hay en total en la vista actual (con filtros aplicados)
+                        // Si el número seleccionado es menor al total de la lista filtrada, avisamos.
+                        return "Vas a mandar {$countSelected} pedidos al armador. Asegurate de que no falte ninguno de la zona elegida.";
                     }),
             ]);
     }
