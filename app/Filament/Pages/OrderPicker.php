@@ -4,8 +4,10 @@ namespace App\Filament\Pages;
 
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Enums\OrderStatus;
 use Filament\Pages\Page;
 use Filament\Notifications\Notification;
+use Livewire\Attributes\Computed;
 
 class OrderPicker extends Page
 {
@@ -14,36 +16,41 @@ class OrderPicker extends Page
     protected static ?string $title = 'Depósito: Armado de Cajas';
     protected static string $view = 'filament.pages.order-picker';
 
-    public $orderId;
-    public $packedQuantities = []; // Aquí guardamos los inputs del armador
+    public $selectedOrderId = null;
+    public $packedQuantities = [];
 
-    // Cargamos el pedido seleccionado
-    public function loadOrder($id)
+    // Buscamos pedidos en estado 'Processing' (Para armar)
+    #[Computed]
+    public function pendingOrders()
     {
-        $this->orderId = $id;
-        $order = Order::with('items.article', 'items.color', 'items.size')->find($id);
+        return Order::where('status', OrderStatus::Processing)
+            ->with(['client', 'items'])
+            ->orderBy('created_at', 'asc')
+            ->get();
+    }
+
+    public function selectOrder($id)
+    {
+        $this->selectedOrderId = $id;
+        $order = Order::with(['items.article', 'items.color', 'items.size'])->find($id);
         
+        $this->packedQuantities = [];
         foreach ($order->items as $item) {
-            // Por defecto, sugerimos la cantidad pedida
             $this->packedQuantities[$item->id] = $item->packed_quantity ?? $item->quantity;
         }
     }
 
     public function confirmPacking()
     {
-        $order = Order::find($this->orderId);
+        if (!$this->selectedOrderId) return;
 
-        foreach ($this->packedQuantities as $itemId => $quantity) {
-            $item = OrderItem::find($itemId);
-            $item->update(['packed_quantity' => $quantity]);
-            
-            // Aquí podrías disparar el ajuste de STOCK REAL
-            // $item->sku->decrementStock($quantity); 
+        foreach ($this->packedQuantities as $itemId => $qty) {
+            OrderItem::where('id', $itemId)->update(['packed_quantity' => (int) $qty]);
         }
 
-        $order->update(['status' => 'packed']); // O el enum que uses
+        Order::where('id', $this->selectedOrderId)->update(['status' => OrderStatus::Assembled]);
 
-        Notification::make()->title('Pedido Armado Correctamente')->success()->send();
-        $this->reset(['orderId', 'packedQuantities']);
+        Notification::make()->title('Pedido #' . $this->selectedOrderId . ' finalizado')->success()->send();
+        $this->reset(['selectedOrderId', 'packedQuantities']);
     }
 }
