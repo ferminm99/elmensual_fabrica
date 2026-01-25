@@ -7,7 +7,7 @@ use Filament\Resources\Pages\EditRecord;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 use Filament\Actions;
-use Barryvdh\DomPDF\Facade\Pdf; // Para tu botón de imprimir
+use Barryvdh\DomPDF\Facade\Pdf; 
 
 class EditOrder extends EditRecord
 {
@@ -17,7 +17,7 @@ class EditOrder extends EditRecord
     {
         return [
             Actions\DeleteAction::make(),
-            // Tu botón de imprimir que agregamos antes
+            
             Actions\Action::make('print')
                 ->label('Imprimir Armado')
                 ->icon('heroicon-o-printer')
@@ -36,7 +36,6 @@ class EditOrder extends EditRecord
     {
         $order = $this->getRecord();
         
-        // Agrupamos los items planos por Artículo
         $grouped = $order->items->groupBy('article_id');
         $articleGroupsForm = [];
 
@@ -44,10 +43,12 @@ class EditOrder extends EditRecord
             $variants = [];
             foreach ($rows as $row) {
                 $variants[] = [
-                    'color_id'   => $row->color_id,
-                    'sku_id'     => $row->sku_id,
-                    'quantity'   => $row->quantity,
-                    'unit_price' => $row->unit_price,
+                    'color_id'        => $row->color_id,
+                    'sku_id'          => $row->sku_id,
+                    'size_id'         => $row->size_id,         // <--- AGREGADO (Importante para la lógica interna)
+                    'quantity'        => $row->quantity,
+                    'packed_quantity' => $row->packed_quantity, // <--- AGREGADO (Para que aparezca el "3" en azul)
+                    'unit_price'      => $row->unit_price,
                 ];
             }
             $articleGroupsForm[] = [
@@ -56,7 +57,6 @@ class EditOrder extends EditRecord
             ];
         }
 
-        // Le pasamos los grupos armados al formulario
         $data['article_groups'] = $articleGroupsForm;
         return $data;
     }
@@ -65,13 +65,13 @@ class EditOrder extends EditRecord
     protected function handleRecordUpdate(Model $record, array $data): Model
     {
         $articleGroups = $data['article_groups'] ?? [];
-        unset($data['article_groups']); // Sacamos lo virtual
+        unset($data['article_groups']); 
 
         return DB::transaction(function () use ($record, $data, $articleGroups) {
-            // Actualizamos datos básicos (Cliente, fecha, etc)
+            // Actualizamos datos básicos
             $record->update($data);
 
-            // ESTRATEGIA SEGURA: Borramos items viejos y recreamos
+            // Borramos items viejos y recreamos
             $record->items()->delete();
 
             $totalAmount = 0;
@@ -86,12 +86,14 @@ class EditOrder extends EditRecord
                     $subtotal = $qty * $price;
 
                     $record->items()->create([
-                        'article_id' => $articleId,
-                        'sku_id'     => $variant['sku_id'],
-                        'color_id'   => $variant['color_id'],
-                        'quantity'   => $qty,
-                        'unit_price' => $price,
-                        'subtotal'   => $subtotal,
+                        'article_id'      => $articleId,
+                        'sku_id'          => $variant['sku_id'],
+                        'color_id'        => $variant['color_id'],
+                        'size_id'         => $variant['size_id'] ?? null,        // <--- AGREGADO
+                        'quantity'        => $qty,
+                        'packed_quantity' => $variant['packed_quantity'] ?? 0,   // <--- AGREGADO (Para no perder lo armado)
+                        'unit_price'      => $price,
+                        'subtotal'        => $subtotal,
                     ]);
 
                     $totalAmount += $subtotal;
@@ -103,5 +105,4 @@ class EditOrder extends EditRecord
             return $record;
         });
     }
-    
 }
