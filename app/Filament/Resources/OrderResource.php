@@ -266,7 +266,7 @@ class OrderResource extends Resource
                                             Forms\Components\Grid::make(12)
                                                 ->extraAttributes(['class' => 'items-center !gap-x-1 !gap-y-0 !m-0 !p-0'])
                                                 ->schema([
-                                                    // SELECT COLOR
+                                                    // SELECT DE COLOR
                                                     Forms\Components\Select::make('color_id')
                                                         ->hiddenLabel()->allowHtml()->searchable()
                                                         ->options(function (Get $get) {
@@ -282,7 +282,7 @@ class OrderResource extends Resource
                                                         ->afterStateUpdated(fn(Get $get, Set $set) => $autoAddRow($get, $set))
                                                         ->columnSpan(3)->extraInputAttributes(['class' => '!h-7 !py-0 text-xs']),
 
-                                                    // SELECT SKU
+                                                    // SELECT DE SKU
                                                     Forms\Components\Select::make('sku_id')
                                                         ->hiddenLabel()->searchable()
                                                         ->options(function (Get $get) {
@@ -301,22 +301,22 @@ class OrderResource extends Resource
                                                             $autoAddRow($get, $set);
                                                         })->columnSpan($isAssembled ? 2 : 3)->extraInputAttributes(['class' => '!h-7 !py-0 text-xs']),
 
-                                                    // --- CANTIDAD PEDIDA (Siempre Editable para corregir) ---
+                                                    // --- CANTIDAD PEDIDA (Siempre Editable) ---
                                                     Forms\Components\TextInput::make('quantity')
                                                         ->hiddenLabel()->numeric()->live()
                                                         ->dehydrated()
                                                         ->afterStateUpdated(fn(Get $get, Set $set) => $autoAddRow($get, $set))
-                                                        ->columnSpan($isAssembled ? 1 : 2) // Se achica si mostramos la otra columna
+                                                        ->columnSpan($isAssembled ? 1 : 2)
                                                         ->extraInputAttributes(['class' => '!h-7 !py-0 text-center font-bold text-sm']),
 
-                                                    // --- CANTIDAD ARMADA (Solo lectura, Reporte del Depósito) ---
+                                                    // --- CANTIDAD ARMADA (Solo lectura) ---
                                                     Forms\Components\TextInput::make('packed_quantity')
                                                         ->hiddenLabel()->numeric()->default(0)
                                                         ->columnSpan(1)
-                                                        ->visible($isAssembled) // Solo visible si está armado
-                                                        ->disabled()            // SIEMPRE BLOQUEADO (Read Only)
-                                                        ->dehydrated()
-                                                        ->extraInputAttributes(['class' => '!h-7 !py-0 text-center font-bold text-sm border-blue-500 bg-blue-50 text-blue-700', 'title' => 'Cantidad Realmente Armada']),
+                                                        ->visible($isAssembled) 
+                                                        ->disabled()            // SIEMPRE BLOQUEADO
+                                                        ->dehydrated(false)
+                                                        ->extraInputAttributes(['class' => '!h-7 !py-0 text-center font-bold text-sm bg-blue-50 border-blue-500 text-blue-700', 'title' => 'Cantidad Realmente Armada']),
 
                                                     Forms\Components\TextInput::make('unit_price')->hiddenLabel()->numeric()->disabled()->dehydrated()->columnSpan(3)->extraInputAttributes(['class' => '!h-7 !py-0 bg-gray-50/50 text-xs']),
 
@@ -340,25 +340,93 @@ class OrderResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
+            // 1. MODIFICAR LA CONSULTA POR DEFECTO PARA AGRUPAR
+            ->modifyQueryUsing(function ($query) {
+                // Esta lógica ordena primero por el ID del Padre (o el propio si es padre)
+                // y luego por ID normal. Así quedan pegados.
+                return $query->orderByRaw("COALESCE(parent_id, id) DESC, id ASC");
+            })
             ->columns([
-                Tables\Columns\TextColumn::make('id')->label('#')->sortable(),
+                Tables\Columns\TextColumn::make('id')
+                ->label('#')
+                    // 2. INDENTACIÓN VISUAL
+                    ->formatStateUsing(function (Order $record) {
+                        if ($record->parent_id) {
+                            // Usamos un caracter especial para la "L"
+                            return new HtmlString("<span style='margin-left: 20px; color: gray;'>└─</span> " . $record->id);
+                        }
+                        return $record->id;
+                    })
+                    ->color(fn (Order $record) => $record->parent_id ? 'gray' : null)
+                    ->searchable(),
                 Tables\Columns\TextColumn::make('client.name')->label('Cliente')->weight('bold')->searchable()
                     ->description(fn (Order $record) => ($record->client->locality?->name ?? 'Sin Localidad') . ' - ' . ($record->client->locality?->zone?->name ?? 'Sin Zona')),
                 Tables\Columns\TextColumn::make('order_date')->date('d/m/Y')->label('Fecha'),
-                Tables\Columns\TextColumn::make('status')->label('Estado')->badge()->formatStateUsing(fn ($state) => $state->getLabel()),
+                
+                // STATUS CON COLORES
+                Tables\Columns\TextColumn::make('status')->label('Estado')->badge()
+                    ->formatStateUsing(fn ($state) => $state->getLabel())
+                    ->color(fn ($state) => match ($state) {
+                        OrderStatus::Draft => 'gray',
+                        OrderStatus::Processing => 'warning', // Naranja
+                        OrderStatus::Assembled => 'info',     // Azul
+                        OrderStatus::Checked => 'primary',    // Violeta
+                        OrderStatus::Delivered => 'danger',   // Rojo
+                        OrderStatus::Paid => 'success',       // Verde
+                        default => 'gray',
+                    }),
+
                 Tables\Columns\TextColumn::make('total_amount')->label('Total')->money('ARS')->weight('bold'),
+
+                // COLUMNA DE VINCULOS (FIXED)
+                Tables\Columns\TextColumn::make('parent_id')
+                    ->label('Vínculo')
+                    ->badge()
+                    ->color('gray')
+                    ->formatStateUsing(fn ($state) => "Derivado de #$state")
+                    ->placeholder('-'), // <-- FIX: Muestra '-' si es null en lugar de explotar
             ])
+            ->defaultSort(null)
             ->filters([
                 Tables\Filters\SelectFilter::make('zone')->label('Zona')->relationship('client.locality.zone', 'name'),
             ])
             ->actions([
                 Tables\Actions\EditAction::make()->visible(fn (Order $record) => $record->status === OrderStatus::Draft || $record->status === OrderStatus::Assembled),
-                Tables\Actions\Action::make('send_to_warehouse')->label('Mandar a Depósito')->icon('heroicon-o-arrow-right-circle')->color('warning')->requiresConfirmation()->visible(fn (Order $record) => $record->status === OrderStatus::Draft)->action(fn (Order $record) => $record->update(['status' => OrderStatus::Processing])),
-            ])
-            ->bulkActions([
-                Tables\Actions\BulkAction::make('bulk_warehouse')->label('Mandar seleccionados a Depósito')->icon('heroicon-o-truck')->color('warning')->action(function ($records) { $records->each(fn ($r) => $r->update(['status' => OrderStatus::Processing])); Notification::make()->title('Enviados')->success()->send(); })->requiresConfirmation()
-                    ->modalDescription(function ($records) { return "Vas a mandar {$records->count()} pedidos al armador. Asegurate de que no falte ninguno de la zona elegida."; }),
-            ]);
+                Tables\Actions\Action::make('revert_status')
+                    ->label('Volver Estado')
+                    ->icon('heroicon-o-arrow-uturn-left')
+                    ->color('danger')
+                    ->requiresConfirmation()
+                    ->visible(fn (Order $order) => $order->status !== OrderStatus::Draft) // Solo si no es borrador
+                    ->form([
+                        Forms\Components\Textarea::make('reason')
+                            ->label('Motivo del cambio')
+                            ->required()
+                    ])
+                    ->action(function (Order $order, array $data) {
+                        // 1. Guardar log
+                        activity()
+                            ->performedOn($order)
+                            ->withProperties(['reason' => $data['reason'], 'previous_status' => $order->status])
+                            ->log('status_reverted');
+
+                        // 2. Cambiar estado (ejemplo: volver a Para Armar)
+                        $order->update(['status' => OrderStatus::Processing]);
+                        
+                        Notification::make()->title('Estado revertido')->success()->send();
+                    }),
+                Tables\Actions\Action::make('send_to_warehouse')
+                    ->label('Mandar a Depósito')
+                    ->icon('heroicon-o-truck') // Cambié el icono a camión, queda mejor
+                    ->color('warning')
+                    ->requiresConfirmation()
+                    // SOLO VISIBLE SI ES BORRADOR (Draft). Si ya es Processing o superior, desaparece.
+                    ->visible(fn (Order $record) => $record->status === OrderStatus::Draft)
+                    ->action(fn (Order $record) => $record->update(['status' => OrderStatus::Processing])),])
+                            ->bulkActions([
+                                Tables\Actions\BulkAction::make('bulk_warehouse')->label('Mandar seleccionados a Depósito')->icon('heroicon-o-truck')->color('warning')->action(function ($records) { $records->each(fn ($r) => $r->update(['status' => OrderStatus::Processing])); Notification::make()->title('Enviados')->success()->send(); })->requiresConfirmation()
+                                    ->modalDescription(function ($records) { return "Vas a mandar {$records->count()} pedidos al armador. Asegurate de que no falte ninguno de la zona elegida."; }),
+                            ]);
     }
 
     public static function getRelations(): array { return []; }
