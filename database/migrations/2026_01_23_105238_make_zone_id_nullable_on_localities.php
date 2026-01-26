@@ -9,9 +9,10 @@ return new class extends Migration
     /**
      * Run the migrations.
      */
-    public function up(): void
-    {
-        //
+    public function up(): void {
+        Schema::table('localities', function (Blueprint $table) {
+            $table->foreignId('zone_id')->nullable()->change();
+        });
     }
 
     /**

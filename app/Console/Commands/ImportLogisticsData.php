@@ -16,6 +16,7 @@ class ImportLogisticsData extends Command
         $parser = new Parser();
         $pdf = $parser->parseFile($path);
         $text = $pdf->getText();
+        
         $lines = explode("\n", $text);
 
         $temp = ['name' => null, 'loc' => null, 'zone' => null, 'salesman' => null];

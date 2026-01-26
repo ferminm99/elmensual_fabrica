@@ -23,16 +23,32 @@
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     @forelse($this->ordersToProcess as $order)
-                        <div wire:click="selectOrder({{ $order->id }})" class="group cursor-pointer relative overflow-hidden rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 transition-all hover:shadow-md hover:ring-yellow-400 dark:bg-gray-800 dark:ring-gray-700">
+                        @php
+                            // Lógica de estilos según prioridad
+                            $priorityClass = match($order->priority) {
+                                3 => 'ring-2 ring-red-500 bg-red-50 dark:bg-red-900/20', // Urgente
+                                2 => 'ring-2 ring-orange-400 bg-orange-50 dark:bg-orange-900/10', // Alta
+                                default => 'ring-1 ring-gray-200 bg-white dark:bg-gray-800 dark:ring-gray-700', // Normal
+                            };
+
+                            $priorityBadge = match($order->priority) {
+                                3 => '<span class="animate-pulse bg-red-600 text-white text-[10px] font-black px-2 py-1 rounded uppercase tracking-wider shadow-sm">🔥 URGENTE</span>',
+                                2 => '<span class="bg-orange-500 text-white text-[10px] font-bold px-2 py-1 rounded uppercase shadow-sm">⚡ ALTA</span>',
+                                default => '<span class="bg-gray-100 text-gray-600 text-[10px] font-bold px-2 py-1 rounded uppercase">NORMAL</span>',
+                            };
+                        @endphp
+
+                        <div wire:click="selectOrder({{ $order->id }})" 
+                            class="group cursor-pointer relative overflow-hidden rounded-xl p-4 shadow-sm transition-all hover:shadow-md hover:scale-[1.02] {{ $priorityClass }}">
+                            
                             <div class="flex justify-between items-start mb-2">
                                 <div>
                                     <h3 class="text-2xl font-black text-gray-900 dark:text-white">#{{ $order->id }}</h3>
-                                    <p class="font-bold text-lg text-gray-700 truncate">{{ $order->client->name ?? 'S/N' }}</p>
+                                    <p class="font-bold text-lg text-gray-700 truncate leading-tight">{{ $order->client->name ?? 'S/N' }}</p>
                                 </div>
-                                <span class="bg-yellow-100 text-yellow-800 text-[10px] font-bold px-2 py-1 rounded uppercase">PENDIENTE</span>
+                                {!! $priorityBadge !!}
                             </div>
                             
-                            {{-- AQUÍ AGREGUÉ LA ZONA Y LOCALIDAD BIEN VISIBLES --}}
                             <div class="mt-3 flex flex-wrap gap-2">
                                 <span class="inline-flex items-center px-2 py-1 rounded text-xs font-bold bg-blue-100 text-blue-800 border border-blue-200">
                                     <x-heroicon-m-map-pin class="w-3 h-3 mr-1"/> {{ $order->client->locality->name ?? 'Sin Loc' }}
@@ -44,12 +60,22 @@
                                 @endif
                             </div>
 
-                            <div class="mt-2 text-xs text-gray-400 flex justify-between pt-2 border-t border-gray-100">
+                            <div class="mt-2 text-xs text-gray-400 flex justify-between pt-2 border-t border-gray-200/50 dark:border-gray-700">
                                 <span>{{ $order->items->count() }} ítems</span>
                                 <span>{{ $order->order_date->format('d/m/Y') }}</span>
                             </div>
                         </div>
-                    @empty <div class="col-span-full py-6 text-center text-gray-400 italic">No hay pedidos pendientes.</div> @endforelse
+                    @empty 
+                        <div class="col-span-full py-12 text-center">
+                            <div class="flex justify-center mb-4">
+                                <div class="p-4 bg-gray-50 rounded-full dark:bg-gray-800">
+                                    <x-heroicon-o-check-circle class="w-12 h-12 text-gray-300"/>
+                                </div>
+                            </div>
+                            <h3 class="text-lg font-medium text-gray-900 dark:text-white">Todo listo por hoy</h3>
+                            <p class="text-gray-500">No hay pedidos pendientes de preparación.</p>
+                        </div> 
+                    @endforelse
                 </div>
             </div>
 

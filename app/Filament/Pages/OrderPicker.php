@@ -27,8 +27,9 @@ class OrderPicker extends Page
     public function getOrdersToProcessProperty()
     {
         return Order::where('status', OrderStatus::Processing)
-            ->with(['client.locality'])
-            ->orderBy('order_date', 'asc')
+            ->with(['client.locality', 'client.locality.zone']) // Traemos zona también para mostrarla
+            ->orderBy('priority', 'desc') // 1. Primero la Prioridad (3=Urgente va arriba)
+            ->orderBy('order_date', 'asc') // 2. Luego por fecha (los más viejos primero)
             ->get();
     }
 

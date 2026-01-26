@@ -10,40 +10,38 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 use App\Traits\HasAccountingType;
 use App\Enums\Origin;
 use Spatie\Activitylog\Traits\LogsActivity;
-use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\LogOptions;// use Spatie\Activitylog\Traits\LogsActivity; // Si usas logs, dejalo
 
 class Order extends Model
 {
     use HasAccountingType;
-    use LogsActivity;
+    use LogsActivity; 
 
     protected $fillable = [
         'client_id',
-        'parent_id',    // Para vincular con el pedido original
-        'invoice_id', 
-        'total_amount',
-        'amount_paid', 
-        'status',
-        'billing_type', 
+        'parent_id', // Fundamental para los Hijos (Splits)
         'order_date',
-        'observations',
+        'status',
+        'priority', // Nuevo
+        'billing_type',
+        'billing_status', // Nuevo
+        'total_amount',
+        'amount_paid',
+        'invoice_number',      // Nuevo
+        'credit_note_number',  // Nuevo
+        'invoiced_at',         // Nuevo
+        'delivered_at',        // Nuevo
     ];
 
-    public function getActivitylogOptions(): LogOptions
-    {
-        return LogOptions::defaults()
-            ->logAll()
-            ->logOnlyDirty()
-            ->dontSubmitEmptyLogs();
-    }
-    
     protected $casts = [
-        'origin' => Origin::class,
-        'status' => OrderStatus::class, 
+        'status' => OrderStatus::class,
         'order_date' => 'date',
+        'invoiced_at' => 'datetime',
+        'delivered_at' => 'datetime',
+        'priority' => 'integer', // Para que Filament lo trate como número
     ];
 
-    // --- RELACIONES ---
+    // --- RELACIONES CLAVE ---
 
     public function client(): BelongsTo
     {
@@ -55,22 +53,43 @@ class Order extends Model
         return $this->hasMany(OrderItem::class);
     }
 
-    public function invoice(): HasOne
+     public function invoice(): HasOne
     {
         return $this->hasOne(Invoice::class);
     }
-
-    // Relaciones para Pedidos Vinculados
-    public function parentOrder(): BelongsTo
+    
+    // RELACIONES RECURSIVAS (Padre e Hijos)
+    // Esto es lo que permite la lógica de "Desglose" cuando editamos un pedido armado
+    public function parent(): BelongsTo
     {
         return $this->belongsTo(Order::class, 'parent_id');
     }
 
+    public function children(): HasMany
+    {
+        return $this->hasMany(Order::class, 'parent_id');
+    }
+
+    
     public function subOrders(): HasMany
     {
         return $this->hasMany(Order::class, 'parent_id');
     }
     
+    // Helper visual para saber si es prioritario
+    public function isPriority(): bool
+    {
+        return $this->priority >= 2;
+    }
+
+      public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->logAll()
+            ->logOnlyDirty()
+            ->dontSubmitEmptyLogs();
+    }
+
     // Helper to calculate total
     public function getTotalAttribute()
     {
