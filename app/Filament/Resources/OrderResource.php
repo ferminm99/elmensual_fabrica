@@ -19,11 +19,8 @@ use Filament\Tables;
 use Filament\Tables\Table;
 use Filament\Notifications\Notification;
 use Illuminate\Support\HtmlString;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Filament\Tables\Filters\SelectFilter;
-use Filament\Tables\Filters\Filter;
-use Illuminate\Database\Eloquent\Builder;
 
 class OrderResource extends Resource
 {
@@ -40,14 +37,12 @@ class OrderResource extends Resource
                     ->compact()
                     ->schema([
                         Forms\Components\Grid::make(5)->schema([
-                            // 1. Cliente
                             Forms\Components\Select::make('client_id')
                                 ->relationship('client', 'name')
                                 ->searchable()
                                 ->required()
                                 ->disabled(fn (Get $get) => $get('status') !== 'draft'),
 
-                            // 2. Facturación
                             Forms\Components\Select::make('billing_type')
                                 ->label('Facturación')
                                 ->options(['fiscal' => 'Fiscal', 'informal' => 'Interno', 'mixed' => 'Mixto'])
@@ -55,18 +50,27 @@ class OrderResource extends Resource
                                 ->required()
                                 ->disabled(fn (Get $get) => !in_array($get('status'), ['draft', 'processing', 'standby'])),
                            
-                            // 3. Estado (LIBRE PARA MOVERSE)
                             Forms\Components\Select::make('status')
                                 ->options(OrderStatus::class)
                                 ->live()
                                 ->required()
                                 ->disableOptionWhen(function ($value, ?Order $record) {
                                     if (!$record) return false;
-                                    $weights = ['draft' => 1, 'processing' => 2, 'assembled' => 3, 'checked' => 4, 'standby' => 5, 'dispatched' => 6, 'delivered' => 7, 'paid' => 8, 'cancelled' => 0];
-                                    $current = $weights[$record->status->value] ?? 0;
-                                    $target = $weights[$value] ?? 0;
-                                    // Bloquea ir atrás si ya se armó, salvo a Standby o Cancelado
-                                    if ($current >= 3 && $target < $current && !in_array($value, ['cancelled', 'standby'])) return true;
+
+                                    // 1. SI ES HIJO: Bloquear todo menos cancelar o el estado actual
+                                    if ($record->parent_id) {
+                                        return !in_array($value, ['cancelled', $record->status->value]);
+                                    }
+
+                                    // 2. SI ES PADRE: No puede avanzar si hay hijos sin armar
+                                    $estadosLogistica = ['assembled', 'checked', 'dispatched', 'delivered', 'paid'];
+                                    if (in_array($value, $estadosLogistica)) {
+                                        $hijosPendientes = $record->children()
+                                            ->whereNotIn('status', ['assembled', 'checked', 'dispatched', 'delivered', 'paid', 'cancelled'])
+                                            ->exists();
+                                        if ($hijosPendientes) return true;
+                                    }
+
                                     return false;
                                 }),
 
@@ -141,7 +145,7 @@ class OrderResource extends Resource
                                         $uuid = $arguments['uuid']; $k = $arguments['key'];
                                         $row = $get("child_groups.{$k}.matrix.{$uuid}");
                                         $val = 0;
-                                        foreach ($row as $key => $v) { if (str_starts_with($key, 'qty_') && (int)$v > 0) { $val = (int)$v; break; } }
+                                        foreach ($row as $key => $v) { if (str_starts_with($key, 'qty_') && (int)$v != 0) { $val = (int)$v; break; } }
                                         $sizes = Sku::where('article_id', $get("child_groups.{$k}.article_id"))->pluck('size_id')->unique();
                                         foreach ($sizes as $sId) { $set("child_groups.{$k}.matrix.{$uuid}.qty_{$sId}", $val); }
                                     }),
@@ -163,7 +167,7 @@ class OrderResource extends Resource
                     ->formatStateUsing(function ($state, Order $record) {
                         if ($record->parent_id) {
                             return new HtmlString('<div class="flex items-center gap-2 pl-8 text-slate-500 italic">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M9 5l7 7-7 7"></path></svg> 
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"></path></svg> 
                                 ' . $state . ' <span class="text-[9px] bg-slate-800 px-1.5 py-0.5 rounded-full border border-slate-700 not-italic font-black text-slate-400">HIJO</span></div>');
                         }
                         return $state;
@@ -175,7 +179,6 @@ class OrderResource extends Resource
                 Tables\Columns\TextColumn::make('total_amount')->money('ARS')->label('Total')->weight('black'),
             ])
             ->headerActions([
-                // RECUPERADO: El Lanzador Logístico Masivo
                 Tables\Actions\Action::make('global_send_to_packing')
                     ->label('Lanzador Logístico')
                     ->icon('heroicon-o-rocket-launch')

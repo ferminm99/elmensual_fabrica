@@ -24,13 +24,12 @@ class OrderPicker extends Page
     public $packedQuantities = []; 
     public $extraQuantities = [];
 
-    // --- LISTAS ---
     public function getOrdersToProcessProperty()
     {
         return Order::where('status', OrderStatus::Processing)
-            ->with(['client.locality', 'client.locality.zone']) // Traemos zona también para mostrarla
-            ->orderBy('priority', 'desc') // 1. Primero la Prioridad (3=Urgente va arriba)
-            ->orderBy('order_date', 'asc') // 2. Luego por fecha (los más viejos primero)
+            ->with(['client.locality', 'client.locality.zone'])
+            ->orderBy('priority', 'desc') 
+            ->orderBy('order_date', 'asc') 
             ->get();
     }
 
@@ -49,30 +48,39 @@ class OrderPicker extends Page
             ->find($this->activeOrderId);
     }
 
-    public function selectOrder($orderId)
+  public function selectOrder($orderId)
     {
         $this->activeOrderId = $orderId;
+        $order = Order::find($orderId);
+        
+        if ($order) {
+            // BLOQUEO REAL: Escribimos directamente en la DB para que el Admin lo vea
+            \Illuminate\Support\Facades\DB::table('orders')->where('id', $orderId)->update([
+                'locked_by' => auth()->id(),
+                'locked_at' => now(),
+            ]);
+        }
         $this->loadOrderData();
     }
 
-    // Dentro de la lógica donde el armador selecciona o abre la orden en su vista
-    public function startPicking(Order $order)
+    public function resetOrder()
     {
-        $order->update([
-            'locked_by' => auth()->id(),
-            'locked_at' => now(),
-        ]);
+        if ($this->activeOrderId) {
+            // LIBERAMOS EL PEDIDO
+            \Illuminate\Support\Facades\DB::table('orders')->where('id', $this->activeOrderId)->update([
+                'locked_by' => null,
+                'locked_at' => null,
+            ]);
+        }
+        $this->activeOrderId = null;
+        $this->packedQuantities = [];
+        $this->extraQuantities = [];
+    }
+    public function clearOrder()
+    {
+        $this->resetOrder();
     }
 
-    // Y cuando termina o cierra la vista
-    public function finishPicking(Order $order)
-    {
-        $order->update([
-            'locked_by' => null,
-            'locked_at' => null,
-        ]);
-    }
-    
     public function loadOrderData()
     {
         $order = $this->getActiveOrderProperty();
@@ -81,18 +89,9 @@ class OrderPicker extends Page
 
         if ($order) {
             foreach ($order->items as $item) {
-                // Cargamos lo YA ARMADO (packed_quantity).
-                // Si es NULL (nunca se tocó), el input saldrá vacío.
                 $this->packedQuantities[$item->id] = $item->packed_quantity;
             }
         }
-    }
-
-    public function resetOrder()
-    {
-        $this->activeOrderId = null;
-        $this->packedQuantities = [];
-        $this->extraQuantities = [];
     }
 
     public function getMatrixDataProperty()
@@ -105,14 +104,12 @@ class OrderPicker extends Page
                 $article = $items->first()->article;
                 if (!$article) return null;
 
-                // Auto-Fix: Recuperar datos desde SKU
                 $fixedItems = $items->map(function($item) {
                     $item->real_size_id = $item->size_id ?? ($item->sku ? $item->sku->size_id : null);
                     $item->real_color_id = $item->color_id ?? ($item->sku ? $item->sku->color_id : null);
                     return $item;
                 });
 
-                // 1. Talles
                 $skus = Sku::where('article_id', $article->id)->get();
                 $allSizeIds = $skus->pluck('size_id')->merge($fixedItems->pluck('real_size_id'))->unique()->filter();
                 $dbSizes = Size::whereIn('id', $allSizeIds)->pluck('name', 'id');
@@ -120,7 +117,6 @@ class OrderPicker extends Page
                     ->sortBy('name', SORT_NATURAL)->values()->all();
                 if (empty($sizes)) $sizes[] = ['id' => 'null', 'name' => 'Único'];
 
-                // 2. Colores
                 $allColorIds = $skus->pluck('color_id')->merge($fixedItems->pluck('real_color_id'))->unique()->filter();
                 $dbColors = Color::whereIn('id', $allColorIds)->get()->keyBy('id');
                 $colors = $allColorIds->map(fn($id) => [
@@ -130,7 +126,6 @@ class OrderPicker extends Page
                 ])->sortBy('name', SORT_NATURAL)->values()->all();
                 if (empty($colors)) $colors[] = ['id' => 'null', 'name' => 'Varios', 'hex' => '#cccccc'];
 
-                // 3. Grilla
                 $grid = [];
                 $totalReq = 0;
                 $totalPack = 0;
@@ -138,16 +133,12 @@ class OrderPicker extends Page
                 foreach ($fixedItems as $item) {
                     $cId = $item->real_color_id ?? 'null';
                     $sId = $item->real_size_id ?? 'null';
-                    
-                    // Lógica visual: 
-                    // Si packedQuantities tiene valor (lo estamos editando), usamos ese.
-                    // Si es NULL, usamos lo de la BD ($item->packed_quantity).
                     $currentPack = $this->packedQuantities[$item->id] ?? $item->packed_quantity; 
 
                     $grid['c_' . $cId]['s_' . $sId] = [
                         'id' => $item->id,
-                        'original_req' => (int)$item->quantity, // LO PEDIDO (Referencia)
-                        'current_val' => $currentPack           // LO ARMADO
+                        'original_req' => (int)$item->quantity,
+                        'current_val' => $currentPack
                     ];
                     
                     $totalReq += (int)$item->quantity;
@@ -169,24 +160,17 @@ class OrderPicker extends Page
             ->filter(); 
     }
 
-    // --- GUARDADO INTELIGENTE (RESPETA HISTORIA) ---
     public function saveProgress()
     {
         DB::transaction(function () {
-            // 1. Actualizar SOLO packed_quantity de los existentes
             foreach ($this->packedQuantities as $itemId => $qty) {
                 $item = OrderItem::find($itemId);
                 if ($item) {
-                    // Convertimos null o vacío a 0
                     $val = ($qty === null || $qty === '') ? 0 : (int)$qty;
-                    
-                    // IMPORTANTE: Solo tocamos packed_quantity. 
-                    // 'quantity' (lo pedido original) queda intacto.
                     $item->update(['packed_quantity' => $val]);
                 }
             }
 
-            // 2. Crear nuevos (Items que NO estaban en el pedido original)
             foreach ($this->extraQuantities as $key => $qty) {
                 if ((int)$qty > 0) {
                     $parts = explode('_', $key); 
@@ -194,11 +178,7 @@ class OrderPicker extends Page
                         $articleId = $parts[0];
                         $colorId = ($parts[1] === 'null') ? null : $parts[1];
                         $sizeId = ($parts[2] === 'null') ? null : $parts[2];
-
-                        $sku = Sku::where('article_id', $articleId)
-                            ->where('color_id', $colorId)
-                            ->where('size_id', $sizeId)
-                            ->first();
+                        $sku = Sku::where('article_id', $articleId)->where('color_id', $colorId)->where('size_id', $sizeId)->first();
 
                         OrderItem::create([
                             'order_id' => $this->activeOrderId,
@@ -206,8 +186,8 @@ class OrderPicker extends Page
                             'sku_id' => $sku?->id,
                             'color_id' => $colorId,
                             'size_id' => $sizeId,
-                            'quantity' => 0, // 0 PORQUE NADIE LO PIDIÓ (Es un agregado)
-                            'packed_quantity' => $qty, // ESTO ES LO QUE SE ARMÓ
+                            'quantity' => 0, 
+                            'packed_quantity' => $qty,
                             'unit_price' => $sku ? $sku->article->base_cost : 0,
                         ]);
                     }
@@ -223,16 +203,12 @@ class OrderPicker extends Page
     public function finalizeOrder()
     {
         $this->saveProgress();
-        
-        // Verificamos si se armó algo
-        $packedCount = OrderItem::where('order_id', $this->activeOrderId)->sum('packed_quantity');
-        
-        if ($packedCount === 0) {
-            Notification::make()->title('Cuidado')->body('Estás finalizando un pedido sin ninguna prenda armada.')->warning()->send();
-        }
-
-        if ($this->activeOrder) {
-            $this->activeOrder->update(['status' => OrderStatus::Assembled]); 
+        if ($this->activeOrderId) {
+            Order::where('id', $this->activeOrderId)->update([
+                'status' => OrderStatus::Assembled,
+                'locked_by' => null, 
+                'locked_at' => null
+            ]); 
             Notification::make()->title('Pedido Finalizado')->success()->send();
             $this->resetOrder();
         }
