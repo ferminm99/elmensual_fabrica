@@ -42,40 +42,39 @@ class OrderResource extends Resource
                         Forms\Components\Grid::make(5)->schema([
                             // 1. Cliente
                             Forms\Components\Select::make('client_id')
-                                ->disabled(fn (?Order $record) => $record && $record->status !== OrderStatus::Draft)
                                 ->relationship('client', 'name')
                                 ->searchable()
-                                ->required(),
+                                ->required()
+                                ->disabled(fn (Get $get) => $get('status') !== 'draft'),
 
                             // 2. Facturación
                             Forms\Components\Select::make('billing_type')
                                 ->label('Facturación')
                                 ->options(['fiscal' => 'Fiscal', 'informal' => 'Interno', 'mixed' => 'Mixto'])
                                 ->default('fiscal')
-                                ->required(),
+                                ->required()
+                                ->disabled(fn (Get $get) => !in_array($get('status'), ['draft', 'processing', 'standby'])),
                            
-                            // 3. Estado (Tu lógica de pesos recuperada)
+                            // 3. Estado (LIBRE PARA MOVERSE)
                             Forms\Components\Select::make('status')
-                                ->label('Estado')
                                 ->options(OrderStatus::class)
                                 ->live()
+                                ->required()
                                 ->disableOptionWhen(function ($value, ?Order $record) {
                                     if (!$record) return false;
-                                    $currentStatus = $record->status instanceof OrderStatus ? $record->status->value : $record->status;
-                                    
-                                    // Bloqueo de facturación si hay hijos pendientes
-                                    if ($record->parent_id === null && in_array($value, ['dispatched', 'delivered', 'paid'])) {
-                                        if ($record->children()->whereNotIn('status', [OrderStatus::Assembled, OrderStatus::Checked, OrderStatus::Cancelled])->exists()) return true;
-                                    }
-
-                                    $weights = ['draft' => 1, 'processing' => 2, 'assembled' => 3, 'checked' => 4, 'standby' => 4, 'dispatched' => 5, 'delivered' => 6, 'paid' => 7, 'cancelled' => 0];
-                                    $cw = $weights[$currentStatus] ?? 0;
-                                    $tw = $weights[$value] ?? 0;
-                                    if ($cw >= 3 && $value !== 'cancelled' && $tw < $cw) return true;
+                                    $weights = ['draft' => 1, 'processing' => 2, 'assembled' => 3, 'checked' => 4, 'standby' => 5, 'dispatched' => 6, 'delivered' => 7, 'paid' => 8, 'cancelled' => 0];
+                                    $current = $weights[$record->status->value] ?? 0;
+                                    $target = $weights[$value] ?? 0;
+                                    // Bloquea ir atrás si ya se armó, salvo a Standby o Cancelado
+                                    if ($current >= 3 && $target < $current && !in_array($value, ['cancelled', 'standby'])) return true;
                                     return false;
-                                })->required(),
+                                }),
 
-                            Forms\Components\DatePicker::make('order_date')->label('Fecha')->default(now())->required(),
+                            Forms\Components\DatePicker::make('order_date')
+                                ->label('Fecha')
+                                ->default(now())
+                                ->required()
+                                ->disabled(fn (Get $get) => $get('status') !== 'draft'),
 
                             Forms\Components\Select::make('priority')
                                 ->label('Prioridad')
@@ -84,8 +83,7 @@ class OrderResource extends Resource
                         ])
                     ]),
 
-                // LA MATRIZ INDUSTRIAL (Integrada)
-                Forms\Components\Section::make('Detalle de Mercadería')
+                Forms\Components\Section::make('Matriz de Mercadería')
                     ->headerActions([
                         Forms\Components\Actions\Action::make('add_article')
                             ->label('Añadir Artículo')
@@ -95,9 +93,12 @@ class OrderResource extends Resource
                             ->form([
                                 Forms\Components\Select::make('article_id')
                                     ->label('Artículo')
-                                    ->options(fn(Get $get) => Article::whereNotIn('id', collect($get('article_groups'))->pluck('article_id')->merge(collect($get('child_groups'))->pluck('article_id'))->toArray())
-                                        ->get()->mapWithKeys(fn($a) => [$a->id => "{$a->code} - {$a->name}"]))
-                                    ->searchable()->required()
+                                    ->options(function (Get $get) {
+                                        $existing = collect($get('article_groups'))->pluck('article_id')
+                                            ->merge(collect($get('child_groups'))->pluck('article_id'))->toArray();
+                                        return Article::whereNotIn('id', $existing)->get()
+                                            ->mapWithKeys(fn($a) => [$a->id => "{$a->code} - {$a->name}"]);
+                                    })->searchable()->required()
                             ])
                             ->action(function (array $data, Set $set, Get $get) {
                                 $target = ($get('status') === 'standby') ? 'child_groups' : 'article_groups';
@@ -125,11 +126,29 @@ class OrderResource extends Resource
                                     ->action(function (array $arguments, Set $set, Get $get) {
                                         $groups = $get('child_groups'); unset($groups[$arguments['key']]); $set('child_groups', $groups);
                                     }),
+                                Forms\Components\Actions\Action::make('fillRow')
+                                    ->action(function (array $arguments, Set $set, Get $get) {
+                                        $uuid = $arguments['uuid']; $gk = $arguments['groupKey'];
+                                        $row = $get("article_groups.{$gk}.matrix.{$uuid}");
+                                        $val = 0;
+                                        foreach ($row as $k => $v) { if (str_starts_with($k, 'qty_') && (int)$v > 0) { $val = (int)$v; break; } }
+                                        $sizes = Sku::where('article_id', $get("article_groups.{$gk}.article_id"))->pluck('size_id')->unique();
+                                        foreach ($sizes as $sId) { $set("article_groups.{$gk}.matrix.{$uuid}.qty_{$sId}", $val); }
+                                    }),
+                                Forms\Components\Actions\Action::make('fillChildRow')
+                                    ->action(function (array $arguments, Set $set, Get $get) {
+                                        $uuid = $arguments['uuid']; $k = $arguments['key'];
+                                        $row = $get("child_groups.{$k}.matrix.{$uuid}");
+                                        $val = 0;
+                                        foreach ($row as $key => $v) { if (str_starts_with($key, 'qty_') && (int)$v > 0) { $val = (int)$v; break; } }
+                                        $sizes = Sku::where('article_id', $get("child_groups.{$k}.article_id"))->pluck('size_id')->unique();
+                                        foreach ($sizes as $sId) { $set("child_groups.{$k}.matrix.{$uuid}.qty_{$sId}", $val); }
+                                    }),
                             ]),
                     ]),
             ]);
     }
-
+    
     public static function table(Table $table): Table
     {
         return $table

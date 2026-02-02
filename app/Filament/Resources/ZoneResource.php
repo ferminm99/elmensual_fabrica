@@ -18,7 +18,8 @@ class ZoneResource extends Resource
     protected static ?string $model = Zone::class;
 
     protected static ?string $navigationIcon = 'heroicon-o-rectangle-stack';
-
+    protected static ?string $navigationGroup = 'Ventas';
+    
     public static function form(Form $form): Form {
         return $form->schema([
             Forms\Components\TextInput::make('code')->label('Código (Ej: 01)')->required()->unique(ignoreRecord: true),

@@ -56,33 +56,28 @@ class EditOrder extends EditRecord
         return DB::transaction(function () use ($record, $data, $articleGroups, $childGroups) {
             $record->update($data);
 
-            // 1. ACTUALIZAR PADRE (Draft: Edita Qty | Processing: Edita Packed)
+            // Si es Draft o Processing, guardamos en el registro actual
             if (in_array($record->status->value, ['draft', 'processing'])) {
                 foreach ($articleGroups as $group) {
                     foreach ($group['matrix'] as $row) {
                         foreach ($row as $k => $val) {
                             if (str_starts_with($k, 'qty_') || str_starts_with($k, 'packed_')) {
                                 $sizeId = str_replace(['qty_', 'packed_'], '', $k);
-                                $sku = Sku::where('article_id', $group['article_id'])
-                                          ->where('color_id', $row['color_id'])
-                                          ->where('size_id', $sizeId)
-                                          ->first();
+                                $sku = Sku::where('article_id', $group['article_id'])->where('color_id', $row['color_id'])->where('size_id', $sizeId)->first();
                                 
                                 if ($sku) {
-                                    $val = (int)($val ?? 0); // FUERZA ENTERO (Evita error 1366)
                                     $field = str_starts_with($k, 'qty_') ? 'quantity' : 'packed_quantity';
-                                    
-                                    // Calculamos subtotal basado en la cantidad pedida siempre
-                                    $qtyOriginal = str_starts_with($k, 'qty_') ? $val : ($row["qty_{$sizeId}"] ?? 0);
+                                    // EL FIX: Asegurar entero, nunca null o string vacío
+                                    $valClean = (int)($val ?? 0);
 
                                     $record->items()->updateOrCreate(
                                         ['sku_id' => $sku->id],
                                         [
                                             'article_id' => $group['article_id'],
                                             'color_id' => $row['color_id'],
-                                            $field => $val,
+                                            $field => $valClean,
                                             'unit_price' => $sku->article->base_cost,
-                                            'subtotal' => (int)$qtyOriginal * $sku->article->base_cost
+                                            'subtotal' => (int)($row["qty_{$sizeId}"] ?? 0) * $sku->article->base_cost
                                         ]
                                     );
                                 }
@@ -91,8 +86,7 @@ class EditOrder extends EditRecord
                     }
                 }
             }
-
-            // 2. FÁBRICA DE HIJOS (Crear nuevo pedido si hay adicionales en Standby)
+            // 2. FÁBRICA DE HIJOS (Crea nuevo pedido si hay carga adicional en Standby)
             if ($record->status->value === 'standby' && count($childGroups) > 0) {
                 $child = Order::create([
                     'parent_id' => $record->id,
@@ -105,20 +99,22 @@ class EditOrder extends EditRecord
 
                 $totalChild = 0;
                 foreach ($childGroups as $group) {
+                    $cArticleId = $group['article_id'];
                     foreach ($group['matrix'] as $row) {
+                        $cColorId = $row['color_id'];
                         foreach ($row as $k => $qty) {
                             if (str_starts_with($k, 'qty_') && (int)$qty > 0) {
                                 $sizeId = str_replace('qty_', '', $k);
-                                $sku = Sku::where('article_id', $group['article_id'])
-                                          ->where('color_id', $row['color_id'])
+                                $sku = Sku::where('article_id', $cArticleId)
+                                          ->where('color_id', $cColorId)
                                           ->where('size_id', $sizeId)
                                           ->first();
                                 if ($sku) {
                                     $sub = (int)$qty * $sku->article->base_cost;
                                     $child->items()->create([
-                                        'article_id' => $group['article_id'],
+                                        'article_id' => $cArticleId,
                                         'sku_id' => $sku->id,
-                                        'color_id' => $row['color_id'],
+                                        'color_id' => $cColorId,
                                         'quantity' => (int)$qty,
                                         'unit_price' => $sku->article->base_cost,
                                         'subtotal' => $sub
@@ -130,7 +126,7 @@ class EditOrder extends EditRecord
                     }
                 }
                 $child->update(['total_amount' => $totalChild]);
-                Notification::make()->title("Hijo #{$child->id} generado.")->success()->send();
+                Notification::make()->title("Orden de Trabajo #{$child->id} generada.")->success()->send();
             }
 
             return $record;

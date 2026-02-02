@@ -16,6 +16,7 @@ class OrderPicker extends Page
 {
     protected static ?string $navigationIcon = 'heroicon-o-cube-transparent';
     protected static ?string $navigationLabel = 'Armado de Pedidos';
+    protected static ?string $navigationGroup = 'Ventas';
     protected static ?string $title = 'Logística y Armado';
     protected static string $view = 'filament.pages.order-picker';
 
