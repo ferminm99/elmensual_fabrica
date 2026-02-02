@@ -121,49 +121,60 @@
         @endforeach
     </div>
 
-    {{-- CAPA 2: FÁBRICA DE HIJOS (SÓLO STANDBY) --}}
+   {{-- CAPA 2: FÁBRICA DE HIJOS (SÓLO STANDBY) --}}
     @if($isStandby)
         <div class="space-y-4 pt-10 border-t-2 border-dashed border-emerald-500/30">
             <div class="flex items-center gap-2 border-l-4 border-emerald-500 pl-4">
                 <div>
-                    <h3 class="text-emerald-500 font-black text-xs uppercase tracking-widest italic">Adicionales (Pedido Hijo)</h3>
+                    <h3 class="text-emerald-500 font-black text-xs uppercase tracking-widest italic text-white">Adicionales (Generará Pedido Hijo)</h3>
+                    <p class="text-[9px] text-emerald-600 font-bold uppercase">Cargue aquí lo que falte para crear una nueva orden de trabajo</p>
                 </div>
             </div>
 
             @foreach($childState as $cKey => $cGroup)
                 @php
-                    $cArticle = \App\Models\Article::find($cGroup['article_id']);
-                    if(!$cArticle) continue;
+                    $cArt = \App\Models\Article::find($cGroup['article_id']);
+                    if(!$cArt) continue;
                     $cSizes = \App\Models\Sku::where('article_id', $cGroup['article_id'])
                         ->join('sizes', 'skus.size_id', '=', 'sizes.id')
                         ->select('sizes.id', 'sizes.name')->distinct()->orderBy('sizes.id')->get();
                 @endphp
-                <div class="bg-emerald-950/10 rounded-xl border border-emerald-500/30 overflow-hidden shadow-2xl mb-6">
-                    <div class="p-3 bg-emerald-900/20 border-b border-emerald-500/30 flex justify-between items-center px-6">
+                <div class="bg-emerald-950/20 rounded-xl border border-emerald-500/30 overflow-hidden mb-6 shadow-2xl">
+                    <div class="p-3 bg-emerald-900/20 flex justify-between items-center px-6 border-b border-emerald-500/20">
                         <div class="flex items-center gap-3">
-                            <span class="bg-emerald-500 text-white px-2 py-0.5 rounded text-[10px] font-black italic tracking-tighter">{{ $cArticle->code }}</span>
-                            <span class="text-emerald-200 font-bold text-xs uppercase italic">{{ $cArticle->name }}</span>
+                            <span class="bg-emerald-600 text-white px-2 py-0.5 rounded text-[10px] font-black italic tracking-tighter">{{ $cArt->code }}</span>
+                            <span class="text-emerald-200 font-bold text-xs uppercase italic">{{ $cArt->name }}</span>
                         </div>
-                        <button type="button" x-on:click="$wire.mountFormComponentAction('article_groups', 'removeChildGroup', { key: '{{ $cKey }}' })" class="text-emerald-700 hover:text-red-400 p-1">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                        <button type="button" x-on:click="$wire.mountFormComponentAction('article_groups', 'removeChildGroup', { key: '{{ $cKey }}' })" class="text-red-400 hover:text-red-300">
+                            <x-heroicon-m-trash class="w-4 h-4" />
                         </button>
                     </div>
                     <table class="w-full border-collapse">
+                        <thead>
+                            <tr class="bg-emerald-900/10 border-b border-emerald-500/10 text-emerald-600/60 font-black uppercase text-[9px]">
+                                <th class="p-2 text-left px-6 w-48 italic">Variante Color</th>
+                                <th class="p-2 w-10"></th>
+                                @foreach($cSizes as $s)
+                                    <th class="p-2 text-center border-l border-emerald-500/10 w-24 tracking-tighter">{{ $s->name }}</th>
+                                @endforeach
+                            </tr>
+                        </thead>
                         <tbody>
                             @foreach($cGroup['matrix'] as $cUuid => $cRow)
-                                <tr class="border-b border-emerald-500/10 h-12">
-                                    <td class="p-1 px-6 flex items-center gap-3 w-48">
+                                <tr class="border-b border-emerald-500/10 hover:bg-emerald-500/5 h-12">
+                                    <td class="p-1 px-6 flex items-center gap-3">
                                         <div class="w-3 h-3 rounded-full shadow-sm border border-white/10" style="background-color: {{ $cRow['color_hex'] }}"></div>
                                         <span class="text-[10px] font-bold text-emerald-100 uppercase truncate">{{ $cRow['color_name'] }}</span>
                                     </td>
                                     <td class="p-1 text-center">
                                         <button type="button" x-on:click="$wire.mountFormComponentAction('article_groups', 'fillChildRow', { uuid: '{{ $cUuid }}', key: '{{ $cKey }}' })" class="text-emerald-400 hover:text-emerald-200">
-                                            <svg class="w-4 h-4 mx-auto" fill="currentColor" viewBox="0 0 20 20"><path d="M11.983 1.907a.75.75 0 00-1.292-.657l-8.5 9.5A.75.75 0 002.75 12h6.572l-1.305 6.093a.75.75 0 001.292.657l8.5-9.5A.75.75 0 0017.25 8h-6.572l1.305-6.093z" /></svg>
+                                            <x-heroicon-m-bolt class="w-4 h-4 mx-auto" />
                                         </button>
                                     </td>
                                     @foreach($cSizes as $s)
                                         <td class="p-0 border-l border-emerald-500/10">
-                                            <input type="number" wire:model.defer="data.child_groups.{{ $cKey }}.matrix.{{ $cUuid }}.qty_{{ $s->id }}"
+                                            <input type="number" 
+                                                wire:model.defer="data.child_groups.{{ $cKey }}.matrix.{{ $cUuid }}.qty_{{ $s->id }}" 
                                                 class="w-full h-12 bg-transparent border-none text-center text-sm font-black text-emerald-400 p-0 focus:ring-0 focus:bg-emerald-500/10 transition-colors" placeholder="0">
                                         </td>
                                     @endforeach
