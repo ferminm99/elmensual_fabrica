@@ -117,6 +117,7 @@ class OrderResource extends Resource
                         Forms\Components\ViewField::make('article_groups')
                             ->view('filament.components.order-matrix-editor')
                             ->columnSpanFull()
+                            ->reactive()
                             ->registerActions([
                                 Forms\Components\Actions\Action::make('removeArticle')
                                     ->action(function (array $arguments, Set $set, Get $get) {
@@ -155,8 +156,20 @@ class OrderResource extends Resource
             ->modifyQueryUsing(fn ($query) => $query->orderByRaw("COALESCE(parent_id, id) DESC, id ASC"))
             ->columns([
                 Tables\Columns\TextColumn::make('id')->label('#')->sortable(),
-                Tables\Columns\TextColumn::make('client.name')->label('Cliente / Zona')->weight('bold')->searchable()
+                Tables\Columns\TextColumn::make('client.name')
+                    ->label('Cliente / Zona')
+                    ->weight('bold')
+                    ->searchable()
+                    ->formatStateUsing(function ($state, Order $record) {
+                        if ($record->parent_id) {
+                            return new HtmlString('<div class="flex items-center gap-2 pl-8 text-slate-500 italic">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M9 5l7 7-7 7"></path></svg> 
+                                ' . $state . ' <span class="text-[9px] bg-slate-800 px-1.5 py-0.5 rounded-full border border-slate-700 not-italic font-black text-slate-400">HIJO</span></div>');
+                        }
+                        return $state;
+                    })
                     ->description(fn (Order $record) => ($record->client->locality->name ?? '-') . ($record->client->locality?->zone ? " ({$record->client->locality->zone->name})" : '')),
+                
                 Tables\Columns\TextColumn::make('order_date')->date('d/m/Y')->label('Fecha')->sortable(),
                 Tables\Columns\TextColumn::make('status')->badge()->label('Estado'),
                 Tables\Columns\TextColumn::make('total_amount')->money('ARS')->label('Total')->weight('black'),

@@ -55,6 +55,24 @@ class OrderPicker extends Page
         $this->loadOrderData();
     }
 
+    // Dentro de la lógica donde el armador selecciona o abre la orden en su vista
+    public function startPicking(Order $order)
+    {
+        $order->update([
+            'locked_by' => auth()->id(),
+            'locked_at' => now(),
+        ]);
+    }
+
+    // Y cuando termina o cierra la vista
+    public function finishPicking(Order $order)
+    {
+        $order->update([
+            'locked_by' => null,
+            'locked_at' => null,
+        ]);
+    }
+    
     public function loadOrderData()
     {
         $order = $this->getActiveOrderProperty();

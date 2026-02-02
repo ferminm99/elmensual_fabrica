@@ -20,6 +20,8 @@ class Order extends Model
     protected $fillable = [
         'client_id',
         'parent_id', // Fundamental para los Hijos (Splits)
+        'locked_by',
+        'locked_at',
         'order_date',
         'status',
         'priority', // Nuevo
@@ -70,6 +72,11 @@ class Order extends Model
         return $this->hasMany(Order::class, 'parent_id');
     }
 
+    // Relación para saber quién bloqueó
+    public function lockedBy()
+    {
+        return $this->belongsTo(User::class, 'locked_by');
+    }
     
     public function subOrders(): HasMany
     {
