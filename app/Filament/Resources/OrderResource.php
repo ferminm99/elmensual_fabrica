@@ -55,63 +55,66 @@ class OrderResource extends Resource
                                 ->options(OrderStatus::class)
                                 ->live()
                                 ->required()
-                                ->disableOptionWhen(function ($value, ?Order $record) {
+                                ->disableOptionWhen(function ($value, ?Order $record, Get $get) {
                                     if (!$record) return false;
                                     
                                     $dbStatus = $record->getOriginal('status');
                                     if ($dbStatus instanceof \BackedEnum) $dbStatus = $dbStatus->value;
 
-                                    // --- REGLA 1: ENTRADA A STANDBY ---
-                                    // "solo posible posteriormente a que este armado" (assembled, checked o dispatched)
-                                    if ($value === 'standby') {
-                                        $estadosQueHabilitanStandby = ['assembled', 'checked', 'dispatched'];
-                                        return !in_array($dbStatus, $estadosQueHabilitanStandby);
-                                    }
-
-                                    // --- REGLA 2: EL BLOQUEO DESDE STANDBY ---
-                                    if ($dbStatus === 'standby') {
-                                        // "solo te deje ir de ahi en adelante a enviado o pagado cerrado o sino a cancelado"
-                                        // Prohibimos: Borrador, Depósito, Armado y Verificado.
-                                        $permitidosDesdeStandby = ['dispatched', 'paid', 'cancelled', 'standby'];
-                                        if (!in_array($value, $permitidosDesdeStandby)) return true;
-
-                                        // BLOQUEO CRÍTICO: "debe bloquearse todo mientras sus hijos estan para armar"
-                                        // Si el usuario intenta ir a Dispatched o Paid, chequeamos hijos.
-                                        if (in_array($value, ['dispatched', 'paid'])) {
-                                            $hijosSinTerminar = $record->children()
-                                                ->whereNotIn('status', ['assembled', 'checked', 'dispatched', 'paid', 'cancelled'])
-                                                ->exists();
-                                            if ($hijosSinTerminar) return true;
+                                    // --- REGLA: MIXTO SIEMPRE PAR ---
+                                    // Si el modo de facturación es mixto, el total de prendas armadas debe ser par.
+                                    if ($get('billing_type') === 'mixed') {
+                                        $totalArmado = $record->items->sum('packed_quantity');
+                                        if ($totalArmado % 2 !== 0 && in_array($value, ['checked', 'dispatched', 'paid'])) {
+                                            return true; // Bloquea avanzar si es impar
                                         }
                                     }
 
-                                    // --- REGLA 3: BLOQUEO DESDE "PARA ARMAR" (Depósito) ---
-                                    if ($dbStatus === 'processing') {
-                                        return !in_array($value, ['draft', 'cancelled', 'processing']);
+                                    // --- REGLA: ENTRADA A STANDBY ---
+                                    if ($value === 'standby') {
+                                        $estadosHabilitantes = ['assembled', 'checked', 'dispatched'];
+                                        return !in_array($dbStatus, $estadosHabilitantes);
                                     }
 
-                                    // --- REGLA 4: NO RETORNO POST-FACTURA ---
-                                    $estadosPostFactura = ['checked', 'dispatched', 'paid'];
-                                    if (in_array($dbStatus, $estadosPostFactura)) {
-                                        // No vuelve a Borrador, Depósito o Armado.
+                                    // --- REGLA: OBLIGAR FACTURACIÓN (EL CAMBIO CLAVE) ---
+                                    // Si el usuario intenta elegir Verificado o superior manualmente...
+                                    if (in_array($value, ['checked', 'dispatched', 'paid'])) {
+                                        // Si el pedido NO tiene factura registrada, BLOQUEAMOS el select manual.
+                                        // Esto obliga a usar el botón "Facturar" de la tabla.
+                                        if (!$record->invoice()->exists() && $value !== $dbStatus) {
+                                            return true;
+                                        }
+                                    }
+
+                                    // --- REGLA: STANDBY HACIA ADELANTE ---
+                                    if ($dbStatus === 'standby') {
+                                        $permitidos = ['dispatched', 'paid', 'cancelled', 'standby'];
+                                        if (!in_array($value, $permitidos)) return true;
+
+                                        $hijosPendientes = $record->children()
+                                            ->whereNotIn('status', ['assembled', 'checked', 'dispatched', 'paid', 'cancelled'])
+                                            ->exists();
+                                        if ($hijosPendientes && in_array($value, ['dispatched', 'paid'])) return true;
+                                    }
+
+                                    // --- REGLA: NO RETORNO ---
+                                    $estadosCerrados = ['checked', 'dispatched', 'paid'];
+                                    if (in_array($dbStatus, $estadosCerrados)) {
                                         if (in_array($value, ['draft', 'processing', 'assembled'])) return true;
-                                        
-                                        // No volver a Checked si ya se avanzó a Dispatched/Paid
                                         if ($dbStatus !== 'checked' && $value === 'checked') return true;
                                     }
 
-                                    // Regla de hijos (General)
-                                    if ($record->parent_id) {
-                                        return !in_array($value, ['cancelled', $record->status->value]);
-                                    }
+                                    if ($dbStatus === 'processing') return !in_array($value, ['draft', 'cancelled', 'processing']);
+                                    if ($record->parent_id) return !in_array($value, ['cancelled', $record->status->value]);
 
                                     return false;
                                 })
-                                ->helperText(fn (?Order $record) => match($record?->getOriginal('status')?->value ?? $record?->getOriginal('status')) {
-                                    'standby' => 'Modo Ajuste: Solo podrá avanzar a Envío o Cierre cuando todos los adicionales estén listos.',
-                                    'processing' => 'En depósito: Debe completarse el armado antes de facturar.',
-                                    'checked', 'dispatched' => 'Pedido facturado: Camino bloqueado hacia atrás.',
-                                    default => null
+                                ->helperText(function (Get $get, ?Order $record) {
+                                    if ($get('billing_type') === 'mixed') {
+                                        $total = $record?->items->sum('packed_quantity') ?? 0;
+                                        if ($total % 2 !== 0) return "Atención: Facturación Mixta requiere cantidad PAR (Actual: $total).";
+                                    }
+                                    return null;
                                 }),
                                 
                             Forms\Components\DatePicker::make('order_date')
@@ -248,55 +251,65 @@ class OrderResource extends Resource
             ])
             ->actions([
                 Tables\Actions\EditAction::make(),
-                
+                Tables\Actions\Action::make('descargar_factura')
+                    ->label('Ver PDF')
+                    ->icon('heroicon-o-arrow-down-tray')
+                    ->color('gray')
+                    ->visible(fn (Order $record) => $record->invoice()->exists())
+                    ->url(fn (Order $record) => route('order.invoice.download', $record->id))
+                    ->openUrlInNewTab(),
                 Tables\Actions\Action::make('facturar')
                     ->label('Facturar')
                     ->icon('heroicon-o-document-check')
                     ->color('success')
                     ->visible(fn (Order $record) => in_array($record->status->value, ['assembled', 'standby']))
                     ->form(function (Order $record) {
+                        $resumen = $record->items->where('packed_quantity', '>', 0)
+                            ->map(fn($i) => "- {$i->article->name}: {$i->packed_quantity} prendas")
+                            ->implode("\n");
+
                         return [
+                            Forms\Components\Placeholder::make('resumen')
+                                ->label('Resumen de Carga Real')
+                                ->content(new HtmlString(nl2br($resumen))),
                             Forms\Components\Grid::make(2)->schema([
                                 Forms\Components\Select::make('billing_type')
-                                    ->label('Tipo de Facturación')
-                                    ->options(['fiscal' => 'Fiscal (AFIP)', 'informal' => 'Interno / Remito'])
-                                    ->default($record->client->billing_type ?? 'fiscal')
-                                    ->required(),
+                                    ->options(['fiscal' => 'Fiscal', 'informal' => 'Interno', 'mixed' => 'Mixto'])
+                                    ->default($record->client->billing_type ?? 'mixed')
+                                    ->required()
+                                    ->live(),
                                 Forms\Components\Select::make('payment_method')
-                                    ->label('Forma de Pago')
-                                    ->options([
-                                        'cta_cte' => 'Cuenta Corriente',
-                                        'efectivo' => 'Efectivo',
-                                        'transferencia' => 'Transferencia',
-                                    ])
+                                    ->options(['cta_cte' => 'Cta Cte', 'efectivo' => 'Efectivo', 'transferencia' => 'Transferencia'])
                                     ->default($record->client->last_payment_method ?? 'cta_cte')
                                     ->required(),
-                                Forms\Components\TextInput::make('invoice_number')
-                                    ->label('Nro de Factura (Opcional si es Auto)')
-                                    ->placeholder('0001-00001234'),
+                                Forms\Components\TextInput::make('invoice_number')->label('Nro Factura')->required(),
                             ])
                         ];
                     })
                     ->action(function (Order $record, array $data) {
+                        $totalArmado = $record->items->sum('packed_quantity');
+                        
+                        if ($data['billing_type'] === 'mixed' && $totalArmado % 2 !== 0) {
+                            Notification::make()->danger()->title('Error: Cantidad Impar en Mixto')->send();
+                            return;
+                        }
+
                         DB::transaction(function () use ($record, $data) {
-                            // Guardar preferencias del cliente para la próxima vez
                             $record->client->update([
                                 'billing_type' => $data['billing_type'],
                                 'last_payment_method' => $data['payment_method']
                             ]);
-
-                            // Crear factura linkeada
+                            
                             $record->invoice()->create([
-                                'number' => $data['invoice_number'] ?? 'FAC-' . str_pad($record->id, 8, '0', STR_PAD_LEFT),
+                                'number' => $data['invoice_number'],
                                 'type' => $data['billing_type'],
                                 'total_amount' => $record->total_amount,
                                 'status' => 'issued',
                             ]);
-
+                            
                             $record->update(['status' => OrderStatus::Checked]);
                         });
-
-                        Notification::make()->title('Pedido Facturado y Verificado').success()->send();
+                        Notification::make()->success()->title('Pedido Facturado').send();
                     })
                     ->requiresConfirmation()
             ])
