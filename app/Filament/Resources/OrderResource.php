@@ -264,52 +264,100 @@ class OrderResource extends Resource
                     ->color('success')
                     ->visible(fn (Order $record) => in_array($record->status->value, ['assembled', 'standby']))
                     ->form(function (Order $record) {
-                        $resumen = $record->items->where('packed_quantity', '>', 0)
-                            ->map(fn($i) => "- {$i->article->name}: {$i->packed_quantity} prendas")
-                            ->implode("\n");
+                        // 1. Agrupamos prendas por Artículo para que el Admin vea lo que se va a facturar
+                        $itemsAgrupados = $record->items()
+                            ->select('article_id', DB::raw('SUM(packed_quantity) as total_qty'), DB::raw('AVG(unit_price) as price'))
+                            ->groupBy('article_id')
+                            ->get();
+
+                        $resumenHtml = "<table style='width:100%; font-size: 0.85rem;'>";
+                        $resumenHtml .= "<thead><tr style='border-bottom: 1px solid #ccc;'><th>Artículo</th><th style='text-align:center'>Total Unid.</th></tr></thead><tbody>";
+                        
+                        foreach ($itemsAgrupados as $item) {
+                            if ($item->total_qty > 0) {
+                                $resumenHtml .= "<tr><td>{$item->article->name}</td><td style='text-align:center'><b>{$item->total_qty}</b></td></tr>";
+                            }
+                        }
+                        $resumenHtml .= "</tbody></table>";
+
+                        $totalPrendas = $itemsAgrupados->sum('total_qty');
+                        $descuentoCliente = $record->client->discount ?? 0;
 
                         return [
-                            Forms\Components\Placeholder::make('resumen')
-                                ->label('Resumen de Carga Real')
-                                ->content(new HtmlString(nl2br($resumen))),
+                            Forms\Components\Placeholder::make('resumen_agrupado')
+                                ->label('Detalle Consolidado de Carga')
+                                ->content(new HtmlString($resumenHtml)),
+                            
+                            Forms\Components\Section::make('Validación y Totales')
+                                ->compact()
+                                ->schema([
+                                    Forms\Components\Placeholder::make('total_prendas')
+                                        ->label('Total Prendas')
+                                        ->content("{$totalPrendas} unidades " . ($totalPrendas % 2 === 0 ? '(PAR)' : '(IMPAR)')),
+                                    
+                                    Forms\Components\Placeholder::make('descuento_aplicado')
+                                        ->label('Descuento Cliente')
+                                        ->content("{$descuentoCliente}%"),
+                                ])->columns(2),
+
                             Forms\Components\Grid::make(2)->schema([
                                 Forms\Components\Select::make('billing_type')
-                                    ->options(['fiscal' => 'Fiscal', 'informal' => 'Interno', 'mixed' => 'Mixto'])
+                                    ->label('Tipo de Facturación')
+                                    ->options(['fiscal' => 'Fiscal (A/B)', 'informal' => 'Interno', 'mixed' => 'Mixto (50/50)'])
                                     ->default($record->client->billing_type ?? 'mixed')
                                     ->required()
                                     ->live(),
+                                
                                 Forms\Components\Select::make('payment_method')
-                                    ->options(['cta_cte' => 'Cta Cte', 'efectivo' => 'Efectivo', 'transferencia' => 'Transferencia'])
+                                    ->label('Forma de Pago')
+                                    ->options([
+                                        'cta_cte' => 'Cuenta Corriente (Deuda)',
+                                        'efectivo' => 'Efectivo',
+                                        'transferencia' => 'Transferencia',
+                                        'cheque' => 'Cheque / E-Cheq',
+                                    ])
                                     ->default($record->client->last_payment_method ?? 'cta_cte')
                                     ->required(),
-                                Forms\Components\TextInput::make('invoice_number')->label('Nro Factura')->required(),
+
+                                Forms\Components\TextInput::make('invoice_number')
+                                    ->label('Punto de Venta y Nro')
+                                    ->placeholder('0001-00001234')
+                                    ->required(),
                             ])
                         ];
                     })
                     ->action(function (Order $record, array $data) {
-                        $totalArmado = $record->items->sum('packed_quantity');
-                        
-                        if ($data['billing_type'] === 'mixed' && $totalArmado % 2 !== 0) {
-                            Notification::make()->danger()->title('Error: Cantidad Impar en Mixto')->send();
+                        $totalPrendas = $record->items->sum('packed_quantity');
+
+                        // Validación Mixto = Par
+                        if ($data['billing_type'] === 'mixed' && $totalPrendas % 2 !== 0) {
+                            Notification::make()->danger()
+                                ->title('Error de Paridad')
+                                ->body('El sistema MIXTO requiere cantidad PAR para dividir la facturación. Ajuste las prendas armadas.')
+                                ->send();
                             return;
                         }
 
                         DB::transaction(function () use ($record, $data) {
+                            // Actualizamos preferencias del cliente para "memoria"
                             $record->client->update([
                                 'billing_type' => $data['billing_type'],
                                 'last_payment_method' => $data['payment_method']
                             ]);
-                            
+
+                            // Creamos la Factura
                             $record->invoice()->create([
                                 'number' => $data['invoice_number'],
                                 'type' => $data['billing_type'],
-                                'total_amount' => $record->total_amount,
+                                'total_amount' => $record->total_amount, // Aquí ya debería tener el descuento aplicado si lo hacés en el total
                                 'status' => 'issued',
+                                'notes' => "Método: {$data['payment_method']}. Total prendas: {$record->items->sum('packed_quantity')}",
                             ]);
-                            
+
                             $record->update(['status' => OrderStatus::Checked]);
                         });
-                        Notification::make()->success()->title('Pedido Facturado').send();
+
+                        Notification::make()->success()->title('Factura generada y vinculada correctamente.').send();
                     })
                     ->requiresConfirmation()
             ])

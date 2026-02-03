@@ -1,38 +1,53 @@
 <style>
     body { font-family: sans-serif; font-size: 10px; color: #333; }
-    .header { border-bottom: 1px solid #eee; padding-bottom: 10px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-    th { background: #f9f9f9; text-align: left; }
-    td, th { padding: 5px; border-bottom: 1px solid #eee; }
-    .total { text-align: right; font-weight: bold; font-size: 14px; }
+    .header { border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; }
+    .header h1 { margin: 0; font-size: 18px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { background: #eee; text-align: left; padding: 5px; border: 1px solid #ccc; }
+    td { padding: 5px; border: 1px solid #eee; }
+    .total-row { font-size: 14px; font-weight: bold; text-align: right; margin-top: 20px; }
 </style>
 
 <div class="header">
-    <h1>FACTURA {{ $invoice->number }}</h1>
-    <p>Cliente: {{ $order->client->name }} | Fecha: {{ now()->format('d/m/Y') }}</p>
+    <h1>{{ strtoupper($invoice->type) }} - {{ $invoice->number }}</h1>
+    <p><b>CLIENTE:</b> {{ $order->client->name }} | <b>FECHA:</b> {{ $invoice->created_at->format('d/m/Y') }}</p>
+    <p><b>ZONA:</b> {{ $order->client->locality->zone->name ?? 'S/N' }}</p>
 </div>
 
 <table>
     <thead>
         <tr>
-            <th>Articulo</th>
-            <th>Color/Talle</th>
-            <th>Cant.</th>
-            <th>Precio</th>
-            <th>Subtotal</th>
+            <th>Código</th>
+            <th>Artículo / Descripción</th>
+            <th style="text-align: center;">Cantidad Total</th>
+            <th style="text-align: right;">Precio Unit.</th>
+            <th style="text-align: right;">Subtotal</th>
         </tr>
     </thead>
     <tbody>
-        @foreach($order->items as $item)
+        @php
+            // Agrupamos los items por articulo para el PDF
+            $itemsAgrupados = $order->items->where('packed_quantity', '>', 0)->groupBy('article_id');
+        @endphp
+        @foreach($itemsAgrupados as $articleId => $subItems)
+            @php
+                $first = $subItems->first();
+                $cantidadTotal = $subItems->sum('packed_quantity');
+            @endphp
             <tr>
-                <td>{{ $item->article->name }}</td>
-                <td>{{ $item->color->name }} / {{ $item->size->name }}</td>
-                <td>{{ $item->packed_quantity }}</td>
-                <td>${{ number_format($item->unit_price, 2) }}</td>
-                <td>${{ number_format($item->packed_quantity * $item->unit_price, 2) }}</td>
+                <td>{{ $first->article->code }}</td>
+                <td>{{ $first->article->name }}</td>
+                <td style="text-align: center;">{{ $cantidadTotal }}</td>
+                <td style="text-align: right;">${{ number_format($first->unit_price, 2) }}</td>
+                <td style="text-align: right;">${{ number_format($cantidadTotal * $first->unit_price, 2) }}</td>
             </tr>
         @endforeach
     </tbody>
 </table>
 
-<p class="total">TOTAL: ${{ number_format($order->total_amount, 2) }}</p>
+<div class="total-row">
+    TOTAL FACTURADO: ${{ number_format($order->total_amount, 2) }}
+</div>
+<div style="margin-top: 10px; font-size: 8px; color: #666;">
+    Observaciones: {{ $invoice->notes }}
+</div>
