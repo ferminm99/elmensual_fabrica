@@ -21,6 +21,7 @@ use Filament\Notifications\Notification;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Facades\DB;
 use Filament\Tables\Filters\SelectFilter;
+use Illuminate\Database\Eloquent\Collection;
 
 class OrderResource extends Resource
 {
@@ -61,29 +62,30 @@ class OrderResource extends Resource
                                     if ($dbStatus instanceof \BackedEnum) $dbStatus = $dbStatus->value;
 
                                     // --- REGLA 1: ENTRADA A STANDBY ---
-                                    // Solo podés poner en Standby si el pedido ya fue Armado o algo superior.
+                                    // "solo posible posteriormente a que este armado" (assembled, checked o dispatched)
                                     if ($value === 'standby') {
-                                        $estadosQuePermitenStandby = ['assembled', 'checked', 'dispatched', 'delivered'];
-                                        return !in_array($dbStatus, $estadosQuePermitenStandby);
+                                        $estadosQueHabilitanStandby = ['assembled', 'checked', 'dispatched'];
+                                        return !in_array($dbStatus, $estadosQueHabilitanStandby);
                                     }
 
                                     // --- REGLA 2: EL BLOQUEO DESDE STANDBY ---
                                     if ($dbStatus === 'standby') {
-                                        // Desde Standby SOLO se puede ir a: Enviado, Pagado o Cancelado.
-                                        // Se prohíbe: Borrador, Depósito, Armado y Verificado.
+                                        // "solo te deje ir de ahi en adelante a enviado o pagado cerrado o sino a cancelado"
+                                        // Prohibimos: Borrador, Depósito, Armado y Verificado.
                                         $permitidosDesdeStandby = ['dispatched', 'paid', 'cancelled', 'standby'];
-                                        
                                         if (!in_array($value, $permitidosDesdeStandby)) return true;
 
-                                        // Bloqueo adicional: No podés avanzar si hay hijos pendientes de armado
-                                        $hijosPendientes = $record->children()
-                                            ->whereNotIn('status', ['assembled', 'checked', 'dispatched', 'paid', 'cancelled'])
-                                            ->exists();
-                                            
-                                        if ($hijosPendientes && in_array($value, ['dispatched', 'paid'])) return true;
+                                        // BLOQUEO CRÍTICO: "debe bloquearse todo mientras sus hijos estan para armar"
+                                        // Si el usuario intenta ir a Dispatched o Paid, chequeamos hijos.
+                                        if (in_array($value, ['dispatched', 'paid'])) {
+                                            $hijosSinTerminar = $record->children()
+                                                ->whereNotIn('status', ['assembled', 'checked', 'dispatched', 'paid', 'cancelled'])
+                                                ->exists();
+                                            if ($hijosSinTerminar) return true;
+                                        }
                                     }
 
-                                    // --- REGLA 3: BLOQUEO DESDE "PARA ARMAR" (Tu lógica existente) ---
+                                    // --- REGLA 3: BLOQUEO DESDE "PARA ARMAR" (Depósito) ---
                                     if ($dbStatus === 'processing') {
                                         return !in_array($value, ['draft', 'cancelled', 'processing']);
                                     }
@@ -91,10 +93,10 @@ class OrderResource extends Resource
                                     // --- REGLA 4: NO RETORNO POST-FACTURA ---
                                     $estadosPostFactura = ['checked', 'dispatched', 'paid'];
                                     if (in_array($dbStatus, $estadosPostFactura)) {
-                                        $totalmenteProhibidos = ['draft', 'processing', 'assembled'];
-                                        if (in_array($value, $totalmenteProhibidos)) return true;
+                                        // No vuelve a Borrador, Depósito o Armado.
+                                        if (in_array($value, ['draft', 'processing', 'assembled'])) return true;
                                         
-                                        // No volver a Facturado si ya se despachó
+                                        // No volver a Checked si ya se avanzó a Dispatched/Paid
                                         if ($dbStatus !== 'checked' && $value === 'checked') return true;
                                     }
 
@@ -105,11 +107,13 @@ class OrderResource extends Resource
 
                                     return false;
                                 })
-                                ->helperText(fn (?Order $record) => match($record?->getOriginal('status')?->value) {
-                                    'standby' => 'Pedido en ajuste. Solo puede avanzar a Envío o Pago una vez que los adicionales estén armados.',
-                                    'processing' => 'En depósito. Solo puede volver a Borrador para corregir o Cancelar.',
+                                ->helperText(fn (?Order $record) => match($record?->getOriginal('status')?->value ?? $record?->getOriginal('status')) {
+                                    'standby' => 'Modo Ajuste: Solo podrá avanzar a Envío o Cierre cuando todos los adicionales estén listos.',
+                                    'processing' => 'En depósito: Debe completarse el armado antes de facturar.',
+                                    'checked', 'dispatched' => 'Pedido facturado: Camino bloqueado hacia atrás.',
                                     default => null
                                 }),
+                                
                             Forms\Components\DatePicker::make('order_date')
                                 ->label('Fecha')
                                 ->default(now())
@@ -214,19 +218,7 @@ class OrderResource extends Resource
                 Tables\Columns\TextColumn::make('status')->badge()->label('Estado'),
                 Tables\Columns\TextColumn::make('total_amount')->money('ARS')->label('Total')->weight('black'),
             ])
-            ->filtersLayout(Tables\Enums\FiltersLayout::AboveContent) // Filtros arriba
-            ->bulkActions([
-                Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\BulkAction::make('changeStatus')
-                        ->label('Cambiar Estado')
-                        ->icon('heroicon-o-arrow-path')
-                        ->form([
-                            Forms\Components\Select::make('status')
-                                ->options(OrderStatus::class)->required(),
-                        ])
-                        ->action(fn (Collection $records, array $data) => $records->each->update(['status' => $data['status']])),
-                ]),
-            ])
+            ->filtersLayout(Tables\Enums\FiltersLayout::AboveContent)
             ->headerActions([
                 Tables\Actions\Action::make('global_send_to_packing')
                     ->label('Lanzador Logístico')
@@ -242,6 +234,18 @@ class OrderResource extends Resource
                         Notification::make()->title("Lanzamiento: {$count} pedidos enviados a armado.")->success()->send();
                     }),
             ])
+            ->bulkActions([
+                Tables\Actions\BulkActionGroup::make([
+                    Tables\Actions\BulkAction::make('changeStatus')
+                        ->label('Cambiar Estado')
+                        ->icon('heroicon-o-arrow-path')
+                        ->form([
+                            Forms\Components\Select::make('status')
+                                ->options(OrderStatus::class)->required(),
+                        ])
+                        ->action(fn (Collection $records, array $data) => $records->each->update(['status' => $data['status']])),
+                ]),
+            ])
             ->actions([
                 Tables\Actions\EditAction::make(),
                 
@@ -249,37 +253,52 @@ class OrderResource extends Resource
                     ->label('Facturar')
                     ->icon('heroicon-o-document-check')
                     ->color('success')
-                    // Solo visible si está armado y listo para facturar
-                    ->visible(fn (Order $record) => $record->status->value === 'assembled')
-                    ->form([
-                        Forms\Components\Grid::make(2)->schema([
-                            Forms\Components\TextInput::make('invoice_number')
-                                ->label('Nro de Factura (AFIP)')
-                                ->placeholder('0001-00001234')
-                                ->required(),
-                            Forms\Components\Select::make('payment_method')
-                                ->label('Forma de Pago')
-                                ->options([
-                                    'efectivo' => 'Efectivo',
-                                    'transferencia' => 'Transferencia',
-                                    'cheque' => 'Cheque',
-                                    'cta_cte' => 'Cuenta Corriente',
-                                ])
-                                ->required(),
-                        ])
-                    ])
+                    ->visible(fn (Order $record) => in_array($record->status->value, ['assembled', 'standby']))
+                    ->form(function (Order $record) {
+                        return [
+                            Forms\Components\Grid::make(2)->schema([
+                                Forms\Components\Select::make('billing_type')
+                                    ->label('Tipo de Facturación')
+                                    ->options(['fiscal' => 'Fiscal (AFIP)', 'informal' => 'Interno / Remito'])
+                                    ->default($record->client->billing_type ?? 'fiscal')
+                                    ->required(),
+                                Forms\Components\Select::make('payment_method')
+                                    ->label('Forma de Pago')
+                                    ->options([
+                                        'cta_cte' => 'Cuenta Corriente',
+                                        'efectivo' => 'Efectivo',
+                                        'transferencia' => 'Transferencia',
+                                    ])
+                                    ->default($record->client->last_payment_method ?? 'cta_cte')
+                                    ->required(),
+                                Forms\Components\TextInput::make('invoice_number')
+                                    ->label('Nro de Factura (Opcional si es Auto)')
+                                    ->placeholder('0001-00001234'),
+                            ])
+                        ];
+                    })
                     ->action(function (Order $record, array $data) {
-                        // Aquí procesamos el cambio de estado y guardamos los datos
-                        $record->update([
-                            'status' => OrderStatus::Checked,
-                            'invoice_number' => $data['invoice_number'],
-                            'invoiced_at' => now(),
-                            // Aquí podrías disparar la lógica de AFIP real
-                        ]);
+                        DB::transaction(function () use ($record, $data) {
+                            // Guardar preferencias del cliente para la próxima vez
+                            $record->client->update([
+                                'billing_type' => $data['billing_type'],
+                                'last_payment_method' => $data['payment_method']
+                            ]);
+
+                            // Crear factura linkeada
+                            $record->invoice()->create([
+                                'number' => $data['invoice_number'] ?? 'FAC-' . str_pad($record->id, 8, '0', STR_PAD_LEFT),
+                                'type' => $data['billing_type'],
+                                'total_amount' => $record->total_amount,
+                                'status' => 'issued',
+                            ]);
+
+                            $record->update(['status' => OrderStatus::Checked]);
+                        });
 
                         Notification::make()->title('Pedido Facturado y Verificado').success()->send();
                     })
-                    ->requiresConfirmation() // Esto fuerza el diálogo
+                    ->requiresConfirmation()
             ])
             ->filters([
                 SelectFilter::make('status')->options(OrderStatus::class)->multiple(),
