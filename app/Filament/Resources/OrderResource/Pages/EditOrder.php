@@ -21,7 +21,7 @@ class EditOrder extends EditRecord
         $userId = auth()->id();
         $ahora = now();
 
-        // Consideramos un bloqueo "vencido" si pasaron más de 2 minutos
+        // Bloqueo temporal: vence a los 2 minutos
         $isLocked = $record->locked_at && $record->locked_at->diffInMinutes($ahora) < 2;
 
         if ($isLocked && $record->locked_by !== $userId) {
@@ -29,14 +29,11 @@ class EditOrder extends EditRecord
             Notification::make()
                 ->danger()
                 ->title("PEDIDO OCUPADO")
-                ->body("{$user} lo tiene abierto. Intenta de nuevo en un momento.")
+                ->body("{$user} lo tiene abierto. Evita cambios simultáneos.")
                 ->persistent()
                 ->send();
-                
-            // Redirigir afuera si querés bloqueo estricto
-            // $this->redirect($this->getResource()::getUrl('index'));
         } else {
-            // Si está libre o el bloqueo venció, el Admin lo pisa
+            // El Admin toma el bloqueo al entrar
             DB::table('orders')->where('id', $record->id)->update([
                 'locked_by' => $userId,
                 'locked_at' => $ahora,
@@ -44,25 +41,22 @@ class EditOrder extends EditRecord
         }
     }
 
-    // Al guardar o salir, liberamos el pedido
     protected function afterSave(): void
     {
+        // Liberamos al guardar
         DB::table('orders')->where('id', $this->getRecord()->id)->update([
             'locked_by' => null,
             'locked_at' => null,
         ]);
     }
-    
+
     protected function beforeSave(): void
     {
-        // BLOQUEO DE GUARDADO SI ESTÁ SIENDO ARMADO
-        if ($this->getRecord()->locked_at && $this->getRecord()->locked_by !== auth()->id()) {
-            Notification::make()
-                ->danger()
-                ->title("Error al guardar")
-                ->body("El pedido está bloqueado por un armador. Espera a que termine.")
-                ->send();
-                
+        $record = $this->getRecord();
+        $isLocked = $record->locked_at && $record->locked_at->diffInMinutes(now()) < 2;
+        
+        if ($isLocked && $record->locked_by !== auth()->id()) {
+            Notification::make()->danger()->title("Error al guardar")->body("El pedido está siendo editado por otro usuario.")->send();
             $this->halt(); 
         }
     }
@@ -96,11 +90,7 @@ class EditOrder extends EditRecord
         }
         $data['article_groups'] = $groups;
 
-        // CARGAR PEDIDOS HIJOS PARA VISUALIZACIÓN EN EL BLADE
-        $children = Order::where('parent_id', $order->id)
-            ->with(['items.sku.size', 'items.color'])
-            ->get();
-
+        $children = Order::where('parent_id', $order->id)->with(['items.sku.size', 'items.color'])->get();
         $childGroupsData = [];
         foreach ($children as $child) {
             $itemsChild = $child->items->groupBy('article_id');
@@ -135,17 +125,28 @@ class EditOrder extends EditRecord
         unset($data['child_groups'], $data['article_groups']);
 
         return DB::transaction(function () use ($record, $data, $articleGroups, $childGroups) {
-            $oldStatus = $record->status->value;
+            $oldStatus = $record->getOriginal('status'); // Estado antes del cambio
             $record->update($data);
             $newStatus = $record->status->value;
 
-            // SINCRONIZACIÓN DE ESTADOS A HIJOS
-            $estadosFinales = ['dispatched', 'delivered', 'paid', 'cancelled'];
-            if ($oldStatus !== $newStatus && in_array($newStatus, $estadosFinales)) {
+            // --- AGREGADO: AUTO-ARMADO SOLO DESDE DRAFT ---
+            $estadosFinales = ['assembled', 'checked', 'dispatched', 'delivered', 'paid'];
+            if ($oldStatus === 'draft' && in_array($newStatus, $estadosFinales)) {
+                foreach ($record->items as $item) {
+                    if ($item->packed_quantity == 0) {
+                        $item->update(['packed_quantity' => $item->quantity]);
+                    }
+                }
+                Notification::make()->warning()->title("Pedido Auto-Armado")->body("Se igualó lo armado a lo pedido.")->send();
+            }
+
+            // SINCRONIZACIÓN DE ESTADOS A HIJOS (Tuyo original)
+            $estadosSincro = ['dispatched', 'delivered', 'paid', 'cancelled'];
+            if ($oldStatus !== $newStatus && in_array($newStatus, $estadosSincro)) {
                 $record->children()->update(['status' => $newStatus]);
             }
 
-            // GUARDAR PADRE (Solo Draft)
+            // GUARDAR PADRE (Tuyo original)
             if ($record->status->value === 'draft') {
                 foreach ($articleGroups as $group) {
                     foreach ($group['matrix'] as $row) {
@@ -166,7 +167,7 @@ class EditOrder extends EditRecord
                 }
             }
 
-            // CREAR HIJO (Standby)
+            // CREAR HIJO (Tuyo original)
             if ($record->status->value === 'standby' && count($childGroups) > 0) {
                 $child = Order::create([
                     'parent_id' => $record->id, 'client_id' => $record->client_id, 'status' => 'processing', 

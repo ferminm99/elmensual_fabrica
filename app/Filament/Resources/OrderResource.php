@@ -56,10 +56,14 @@ class OrderResource extends Resource
                                 ->required()
                                 ->disableOptionWhen(function ($value, ?Order $record) {
                                     if (!$record) return false;
+                                    $oldStatus = $record->getOriginal('status');
 
                                     // 1. SI ES HIJO: Bloquear todo menos cancelar o el estado actual
                                     if ($record->parent_id) {
                                         return !in_array($value, ['cancelled', $record->status->value]);
+                                    }
+                                    if ($oldStatus === 'processing') {
+                                        return !in_array($value, ['draft', 'cancelled', 'processing']);
                                     }
 
                                     // 2. SI ES PADRE: No puede avanzar si hay hijos sin armar
@@ -178,6 +182,19 @@ class OrderResource extends Resource
                 Tables\Columns\TextColumn::make('status')->badge()->label('Estado'),
                 Tables\Columns\TextColumn::make('total_amount')->money('ARS')->label('Total')->weight('black'),
             ])
+            ->filtersLayout(Tables\Enums\FiltersLayout::AboveContent) // Filtros arriba
+            ->bulkActions([
+                Tables\Actions\BulkActionGroup::make([
+                    Tables\Actions\BulkAction::make('changeStatus')
+                        ->label('Cambiar Estado')
+                        ->icon('heroicon-o-arrow-path')
+                        ->form([
+                            Forms\Components\Select::make('status')
+                                ->options(OrderStatus::class)->required(),
+                        ])
+                        ->action(fn (Collection $records, array $data) => $records->each->update(['status' => $data['status']])),
+                ]),
+            ])
             ->headerActions([
                 Tables\Actions\Action::make('global_send_to_packing')
                     ->label('Lanzador Logístico')
@@ -186,7 +203,7 @@ class OrderResource extends Resource
                     ->form([
                         Forms\Components\Select::make('zone_ids')->label('Zona')->options(Zone::all()->pluck('name', 'id'))->multiple()->live(),
                         Forms\Components\CheckboxList::make('locality_ids')->label('Localidades')
-                            ->options(fn (Get $get) => Locality::whereIn('zone_id', $get('zone_ids') ?? [])->pluck('name', 'id'))->columns(3)->required(),
+                            ->options(fn (Get $get) => Locality::whereIn('zone_id', $get('zone_ids') ?? [])->pluck('name', 'id'))->columns(3)->required()->bulkToggleable(),
                     ])
                     ->action(function (array $data) {
                         $count = Order::where('status', OrderStatus::Draft)->whereHas('client', fn($q) => $q->whereIn('locality_id', $data['locality_ids']))->update(['status' => OrderStatus::Processing]);
