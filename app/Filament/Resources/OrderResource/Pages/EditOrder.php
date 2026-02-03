@@ -18,21 +18,41 @@ class EditOrder extends EditRecord
     protected function beforeFill(): void
     {
         $record = $this->getRecord();
-        
-        // ALERTA DE BLOQUEO POR ARMADOR (CON TIEMPO)
-        if ($record->locked_at && $record->locked_by !== auth()->id()) {
+        $userId = auth()->id();
+        $ahora = now();
+
+        // Consideramos un bloqueo "vencido" si pasaron más de 2 minutos
+        $isLocked = $record->locked_at && $record->locked_at->diffInMinutes($ahora) < 2;
+
+        if ($isLocked && $record->locked_by !== $userId) {
             $user = $record->lockedBy?->name ?? 'Un armador';
-            $tiempo = $record->locked_at->diffForHumans(); // "hace 5 minutos"
-            
             Notification::make()
                 ->danger()
-                ->title("PEDIDO SIENDO ARMADO")
-                ->body("{$user} tiene este pedido abierto hace {$tiempo}. Los cambios pueden causar errores de stock.")
+                ->title("PEDIDO OCUPADO")
+                ->body("{$user} lo tiene abierto. Intenta de nuevo en un momento.")
                 ->persistent()
                 ->send();
+                
+            // Redirigir afuera si querés bloqueo estricto
+            // $this->redirect($this->getResource()::getUrl('index'));
+        } else {
+            // Si está libre o el bloqueo venció, el Admin lo pisa
+            DB::table('orders')->where('id', $record->id)->update([
+                'locked_by' => $userId,
+                'locked_at' => $ahora,
+            ]);
         }
     }
 
+    // Al guardar o salir, liberamos el pedido
+    protected function afterSave(): void
+    {
+        DB::table('orders')->where('id', $this->getRecord()->id)->update([
+            'locked_by' => null,
+            'locked_at' => null,
+        ]);
+    }
+    
     protected function beforeSave(): void
     {
         // BLOQUEO DE GUARDADO SI ESTÁ SIENDO ARMADO
@@ -119,13 +139,13 @@ class EditOrder extends EditRecord
             $record->update($data);
             $newStatus = $record->status->value;
 
-            // 1. SINCRONIZACIÓN DE HIJOS: Si el padre se mueve a avanzado o cancelado
+            // SINCRONIZACIÓN DE ESTADOS A HIJOS
             $estadosFinales = ['dispatched', 'delivered', 'paid', 'cancelled'];
             if ($oldStatus !== $newStatus && in_array($newStatus, $estadosFinales)) {
                 $record->children()->update(['status' => $newStatus]);
             }
 
-            // 2. GUARDAR PADRE (SOLO SI ES DRAFT, EN STANDBY EL PADRE NO SE TOCA)
+            // GUARDAR PADRE (Solo Draft)
             if ($record->status->value === 'draft') {
                 foreach ($articleGroups as $group) {
                     foreach ($group['matrix'] as $row) {
@@ -134,16 +154,11 @@ class EditOrder extends EditRecord
                                 $sizeId = str_replace('qty_', '', $k);
                                 $sku = Sku::where('article_id', $group['article_id'])->where('color_id', $row['color_id'])->where('size_id', $sizeId)->first();
                                 if ($sku) {
-                                    $record->items()->updateOrCreate(
-                                        ['sku_id' => $sku->id],
-                                        [
-                                            'article_id' => $group['article_id'],
-                                            'color_id' => $row['color_id'],
-                                            'quantity' => (int)($val ?? 0),
-                                            'unit_price' => $sku->article->base_cost,
-                                            'subtotal' => (int)($val ?? 0) * $sku->article->base_cost
-                                        ]
-                                    );
+                                    $record->items()->updateOrCreate(['sku_id' => $sku->id], [
+                                        'article_id' => $group['article_id'], 'color_id' => $row['color_id'],
+                                        'quantity' => (int)($val ?? 0), 'unit_price' => $sku->article->base_cost,
+                                        'subtotal' => (int)($val ?? 0) * $sku->article->base_cost
+                                    ]);
                                 }
                             }
                         }
@@ -151,17 +166,12 @@ class EditOrder extends EditRecord
                 }
             }
 
-            // 3. CREAR PEDIDO HIJO (Solo en Standby)
+            // CREAR HIJO (Standby)
             if ($record->status->value === 'standby' && count($childGroups) > 0) {
                 $child = Order::create([
-                    'parent_id' => $record->id,
-                    'client_id' => $record->client_id,
-                    'status' => 'processing', 
-                    'order_date' => now(),
-                    'billing_type' => $record->billing_type,
-                    'total_amount' => 0
+                    'parent_id' => $record->id, 'client_id' => $record->client_id, 'status' => 'processing', 
+                    'order_date' => now(), 'billing_type' => $record->billing_type, 'total_amount' => 0
                 ]);
-
                 $totalChild = 0;
                 foreach ($childGroups as $group) {
                     foreach ($group['matrix'] as $row) {
@@ -172,12 +182,8 @@ class EditOrder extends EditRecord
                                 if ($sku) {
                                     $sub = (int)$qty * $sku->article->base_cost;
                                     $child->items()->create([
-                                        'article_id' => $group['article_id'],
-                                        'sku_id' => $sku->id,
-                                        'color_id' => $row['color_id'],
-                                        'quantity' => (int)$qty,
-                                        'unit_price' => $sku->article->base_cost,
-                                        'subtotal' => $sub
+                                        'article_id' => $group['article_id'], 'sku_id' => $sku->id, 'color_id' => $row['color_id'],
+                                        'quantity' => (int)$qty, 'unit_price' => $sku->article->base_cost, 'subtotal' => $sub
                                     ]);
                                     $totalChild += $sub;
                                 }
@@ -186,9 +192,9 @@ class EditOrder extends EditRecord
                     }
                 }
                 $child->update(['total_amount' => $totalChild]);
-                Notification::make()->title("Orden de Trabajo #{$child->id} generada.")->success()->send();
+                $this->data['child_groups'] = [];
+                Notification::make()->title("Orden #{$child->id} generada.")->success()->send();
             }
-
             return $record;
         });
     }

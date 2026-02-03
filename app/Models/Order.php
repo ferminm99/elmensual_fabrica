@@ -36,6 +36,7 @@ class Order extends Model
     ];
 
     protected $casts = [
+        'locked_at' => 'datetime',
         'status' => OrderStatus::class,
         'order_date' => 'date',
         'invoiced_at' => 'datetime',
@@ -102,4 +103,5 @@ class Order extends Model
     {
         return $this->items->sum(fn($item) => $item->quantity * $item->unit_price);
     }
+
 }

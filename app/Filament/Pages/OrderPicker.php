@@ -48,26 +48,43 @@ class OrderPicker extends Page
             ->find($this->activeOrderId);
     }
 
-  public function selectOrder($orderId)
+    public function keepAlive()
     {
-        $this->activeOrderId = $orderId;
-        $order = Order::find($orderId);
-        
-        if ($order) {
-            // BLOQUEO REAL: Escribimos directamente en la DB para que el Admin lo vea
-            \Illuminate\Support\Facades\DB::table('orders')->where('id', $orderId)->update([
-                'locked_by' => auth()->id(),
+        if ($this->activeOrderId) {
+            DB::table('orders')->where('id', $this->activeOrderId)->update([
                 'locked_at' => now(),
             ]);
         }
+    }
+
+    public function selectOrder($orderId)
+    {
+        $order = Order::find($orderId);
+        $userId = auth()->id();
+        $ahora = now();
+
+        // Solo bloquear si el bloqueo actual tiene menos de 2 minutos
+        $isLocked = $order->locked_at && $order->locked_at->diffInMinutes($ahora) < 2;
+
+        if ($isLocked && $order->locked_by !== $userId) {
+            Notification::make()->warning()->title("Pedido Ocupado")->send();
+            return;
+        }
+
+        DB::table('orders')->where('id', $orderId)->update([
+            'locked_by' => $userId,
+            'locked_at' => $ahora,
+        ]);
+
+        $this->activeOrderId = $orderId;
         $this->loadOrderData();
     }
 
     public function resetOrder()
     {
         if ($this->activeOrderId) {
-            // LIBERAMOS EL PEDIDO
-            \Illuminate\Support\Facades\DB::table('orders')->where('id', $this->activeOrderId)->update([
+            // LIBERAR EL PEDIDO AL SALIR
+            DB::table('orders')->where('id', $this->activeOrderId)->update([
                 'locked_by' => null,
                 'locked_at' => null,
             ]);
@@ -76,6 +93,7 @@ class OrderPicker extends Page
         $this->packedQuantities = [];
         $this->extraQuantities = [];
     }
+    
     public function clearOrder()
     {
         $this->resetOrder();
