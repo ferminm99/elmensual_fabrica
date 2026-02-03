@@ -118,6 +118,42 @@ class EditOrder extends EditRecord
         return $data;
     }
 
+    protected function getHeaderActions(): array
+    {
+        return [
+            \Filament\Actions\Action::make('facturar_pedido')
+                ->label('Facturar (AFIP)')
+                ->color('success')
+                ->icon('heroicon-o-document-check')
+                ->visible(fn (Order $record) => $record->status->value === 'assembled')
+                ->form([
+                    \Filament\Forms\Components\Grid::make(2)->schema([
+                        \Filament\Forms\Components\TextInput::make('invoice_number')
+                            ->label('Nro Factura')
+                            ->required(),
+                        \Filament\Forms\Components\Select::make('payment_method')
+                            ->label('Forma de Pago')
+                            ->options([
+                                'cta_cte' => 'Cuenta Corriente',
+                                'efectivo' => 'Efectivo',
+                                'transferencia' => 'Transferencia',
+                            ])->required(),
+                    ])
+                ])
+                ->action(function (Order $record, array $data) {
+                    $record->update([
+                        'status' => \App\Enums\OrderStatus::Checked,
+                        'invoice_number' => $data['invoice_number'],
+                        'invoiced_at' => now(),
+                        // Aquí luego dispararemos la lógica de deuda según payment_method
+                    ]);
+                    
+                    Notification::make()->title('Facturado correctamente').success()->send();
+                })
+                ->requiresConfirmation(),
+        ];
+    }
+
     protected function handleRecordUpdate(Model $record, array $data): Model
     {
         $childGroups = $this->data['child_groups'] ?? [];

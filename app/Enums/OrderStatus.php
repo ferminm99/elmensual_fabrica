@@ -11,9 +11,9 @@ enum OrderStatus: string implements HasLabel, HasColor
     case Processing = 'processing';
     case Assembled = 'assembled';
     case Checked = 'checked';
-    case Standby = 'standby'; // <--- NUEVO: Esperando al hijo para consolidar
-    case Dispatched = 'dispatched';
-    case Delivered = 'delivered';
+    case Standby = 'standby';
+    case Dispatched = 'dispatched'; // Este será "Cargado en Viajante"
+    // Removemos Delivered del Enum si no lo vas a usar, o lo dejamos pero sin label duplicado
     case Paid = 'paid';
     case Cancelled = 'cancelled';
 
@@ -23,10 +23,9 @@ enum OrderStatus: string implements HasLabel, HasColor
             self::Draft => 'Borrador / Cargando',
             self::Processing => 'Para Armar (Depósito)',
             self::Assembled => 'Armado / Listo',
-            self::Checked => 'Verificado',
-            self::Standby => 'En Standby (Esperando Consolidación)', // <--- Label
-            self::Dispatched => 'Enviado (En camino)',
-            self::Delivered => 'Entregado (A Cobrar)',
+            self::Checked => 'Verificado (Facturado)',
+            self::Standby => 'En Standby',
+            self::Dispatched => 'Cargado en Viajante',
             self::Paid => 'Pagado / Cerrado',
             self::Cancelled => 'Cancelado',
         };
@@ -39,9 +38,8 @@ enum OrderStatus: string implements HasLabel, HasColor
             self::Processing => 'warning',
             self::Assembled => 'info',
             self::Checked => 'primary',
-            self::Standby => 'warning', // <--- Color de alerta suave
-            self::Dispatched => 'gray',
-            self::Delivered => 'danger',
+            self::Standby => 'warning',
+            self::Dispatched => 'success',
             self::Paid => 'success',
             self::Cancelled => 'danger',
         };
