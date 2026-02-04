@@ -258,106 +258,123 @@ class OrderResource extends Resource
                     ->visible(fn (Order $record) => $record->invoice()->exists())
                     ->url(fn (Order $record) => route('order.invoice.download', $record->id))
                     ->openUrlInNewTab(),
+                // app/Filament/Resources/OrderResource.php
+
                 Tables\Actions\Action::make('facturar')
                     ->label('Facturar')
                     ->icon('heroicon-o-document-check')
                     ->color('success')
                     ->visible(fn (Order $record) => in_array($record->status->value, ['assembled', 'standby']))
                     ->form(function (Order $record) {
-                        // 1. Agrupamos prendas por Artículo para que el Admin vea lo que se va a facturar
+                        // Agrupamos artículos para el resumen (sin repetir por color)
                         $itemsAgrupados = $record->items()
-                            ->select('article_id', DB::raw('SUM(packed_quantity) as total_qty'), DB::raw('AVG(unit_price) as price'))
+                            ->select('article_id', DB::raw('SUM(packed_quantity) as total_qty'))
                             ->groupBy('article_id')
+                            ->having('total_qty', '>', 0)
                             ->get();
 
-                        $resumenHtml = "<table style='width:100%; font-size: 0.85rem;'>";
-                        $resumenHtml .= "<thead><tr style='border-bottom: 1px solid #ccc;'><th>Artículo</th><th style='text-align:center'>Total Unid.</th></tr></thead><tbody>";
-                        
-                        foreach ($itemsAgrupados as $item) {
-                            if ($item->total_qty > 0) {
-                                $resumenHtml .= "<tr><td>{$item->article->name}</td><td style='text-align:center'><b>{$item->total_qty}</b></td></tr>";
-                            }
-                        }
-                        $resumenHtml .= "</tbody></table>";
-
+                        $resumen = $itemsAgrupados->map(fn($i) => "- {$i->article->name}: {$i->total_qty} un.")->implode("<br>");
                         $totalPrendas = $itemsAgrupados->sum('total_qty');
-                        $descuentoCliente = $record->client->discount ?? 0;
 
                         return [
-                            Forms\Components\Placeholder::make('resumen_agrupado')
-                                ->label('Detalle Consolidado de Carga')
-                                ->content(new HtmlString($resumenHtml)),
-                            
-                            Forms\Components\Section::make('Validación y Totales')
-                                ->compact()
-                                ->schema([
-                                    Forms\Components\Placeholder::make('total_prendas')
-                                        ->label('Total Prendas')
-                                        ->content("{$totalPrendas} unidades " . ($totalPrendas % 2 === 0 ? '(PAR)' : '(IMPAR)')),
-                                    
-                                    Forms\Components\Placeholder::make('descuento_aplicado')
-                                        ->label('Descuento Cliente')
-                                        ->content("{$descuentoCliente}%"),
-                                ])->columns(2),
+                            Forms\Components\Placeholder::make('resumen_carga')
+                                ->label('Detalle Consolidado')
+                                ->content(new HtmlString($resumen . "<br><b>Total: {$totalPrendas} prendas</b>")),
 
                             Forms\Components\Grid::make(2)->schema([
                                 Forms\Components\Select::make('billing_type')
-                                    ->label('Tipo de Facturación')
-                                    ->options(['fiscal' => 'Fiscal (A/B)', 'informal' => 'Interno', 'mixed' => 'Mixto (50/50)'])
+                                    ->label('Tipo de Comprobante')
+                                    ->options(['fiscal' => 'Factura A/B', 'informal' => 'Remito Interno', 'mixed' => 'Mixto (PAR)'])
                                     ->default($record->client->billing_type ?? 'mixed')
-                                    ->required()
-                                    ->live(),
-                                
+                                    ->required()->live(),
+
                                 Forms\Components\Select::make('payment_method')
-                                    ->label('Forma de Pago')
+                                    ->label('Método de Pago')
                                     ->options([
-                                        'cta_cte' => 'Cuenta Corriente (Deuda)',
+                                        'cta_cte' => 'Cuenta Corriente',
                                         'efectivo' => 'Efectivo',
                                         'transferencia' => 'Transferencia',
-                                        'cheque' => 'Cheque / E-Cheq',
+                                        'cheque' => 'Cheque',
                                     ])
                                     ->default($record->client->last_payment_method ?? 'cta_cte')
-                                    ->required(),
+                                    ->required()->live(),
+                            ]),
 
-                                Forms\Components\TextInput::make('invoice_number')
-                                    ->label('Punto de Venta y Nro')
-                                    ->placeholder('0001-00001234')
-                                    ->required(),
-                            ])
+                            // SECCIÓN DINÁMICA DE PAGOS
+                            Forms\Components\Section::make('Datos del Pago')
+                                ->visible(fn (Get $get) => in_array($get('payment_method'), ['transferencia', 'cheque']))
+                                ->columns(2)
+                                ->schema([
+                                    // Campos para Transferencia
+                                    Forms\Components\TextInput::make('bank_name')
+                                        ->label('Banco Origen')
+                                        ->placeholder('Ej: Galicia / Mercado Pago')
+                                        ->visible(fn (Get $get) => $get('payment_method') === 'transferencia')
+                                        ->required(fn (Get $get) => $get('payment_method') === 'transferencia'),
+                                    
+                                    Forms\Components\TextInput::make('cbu_alias')
+                                        ->label('CBU o Alias de quien envía')
+                                        ->visible(fn (Get $get) => $get('payment_method') === 'transferencia')
+                                        ->required(fn (Get $get) => $get('payment_method') === 'transferencia'),
+
+                                    Forms\Components\TextInput::make('transaction_id')
+                                        ->label('ID Transacción / Nro Operación')
+                                        ->visible(fn (Get $get) => $get('payment_method') === 'transferencia')
+                                        ->required(fn (Get $get) => $get('payment_method') === 'transferencia'),
+
+                                    // Campos para Cheque (Igual que en tu módulo de cheques)
+                                    Forms\Components\TextInput::make('check_number')
+                                        ->label('Nro de Cheque')
+                                        ->visible(fn (Get $get) => $get('payment_method') === 'cheque')
+                                        ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
+
+                                    Forms\Components\DatePicker::make('due_date')
+                                        ->label('Fecha de Vencimiento')
+                                        ->visible(fn (Get $get) => $get('payment_method') === 'cheque')
+                                        ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
+                                ]),
+
+                            Forms\Components\Section::make('Facturación')
+                                ->description('Simulación de AFIP (Próximamente automático)')
+                                ->schema([
+                                    Forms\Components\TextInput::make('manual_invoice_number')
+                                        ->label('Nro Factura (Para testeo manual ahora)')
+                                        ->helperText('Cuando integremos AFIP, este campo desaparecerá y será automático.'),
+                                ])
                         ];
                     })
                     ->action(function (Order $record, array $data) {
                         $totalPrendas = $record->items->sum('packed_quantity');
 
-                        // Validación Mixto = Par
                         if ($data['billing_type'] === 'mixed' && $totalPrendas % 2 !== 0) {
-                            Notification::make()->danger()
-                                ->title('Error de Paridad')
-                                ->body('El sistema MIXTO requiere cantidad PAR para dividir la facturación. Ajuste las prendas armadas.')
-                                ->send();
+                            Notification::make()->danger()->title('Error: Cantidad Impar')->body('Mixto requiere número par.')->send();
                             return;
                         }
 
                         DB::transaction(function () use ($record, $data) {
-                            // Actualizamos preferencias del cliente para "memoria"
+                            // Guardar en el cliente para la próxima
                             $record->client->update([
                                 'billing_type' => $data['billing_type'],
                                 'last_payment_method' => $data['payment_method']
                             ]);
 
-                            // Creamos la Factura
+                            // Creamos la Factura en DB
                             $record->invoice()->create([
-                                'number' => $data['invoice_number'],
+                                'number' => $data['manual_invoice_number'] ?? 'PENDIENTE-AFIP',
                                 'type' => $data['billing_type'],
-                                'total_amount' => $record->total_amount, // Aquí ya debería tener el descuento aplicado si lo hacés en el total
+                                'total_amount' => $record->total_amount,
                                 'status' => 'issued',
-                                'notes' => "Método: {$data['payment_method']}. Total prendas: {$record->items->sum('packed_quantity')}",
+                                'notes' => match($data['payment_method']) {
+                                    'transferencia' => "Transf: {$data['bank_name']} | CBU: {$data['cbu_alias']} | ID: {$data['transaction_id']}",
+                                    'cheque' => "Cheque Nro: {$data['check_number']} | Vence: {$data['due_date']}",
+                                    default => "Pago: {$data['payment_method']}"
+                                }
                             ]);
 
                             $record->update(['status' => OrderStatus::Checked]);
                         });
 
-                        Notification::make()->success()->title('Factura generada y vinculada correctamente.').send();
+                        Notification::make()->success()->title('Facturado y Verificado').send();
                     })
                     ->requiresConfirmation()
             ])
