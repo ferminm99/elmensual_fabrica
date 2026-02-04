@@ -274,8 +274,6 @@ class OrderResource extends Resource
                             ->get();
 
                         $totalCostoPedido = 0;
-                        
-                        // Estilo compatible con Dark Mode
                         $resumenHtml = "<div class='p-4 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 shadow-sm'>";
                         $resumenHtml .= "<table class='w-full text-sm text-left text-gray-700 dark:text-gray-300'>";
                         $resumenHtml .= "<thead class='text-xs uppercase bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'>
@@ -285,49 +283,45 @@ class OrderResource extends Resource
                                                 <th class='px-3 py-2 text-right rounded-r-lg'>Subtotal</th>
                                             </tr>
                                         </thead><tbody>";
-                        
                         foreach ($itemsAgrupados as $item) {
                             $sub = $item->total_qty * $item->price;
                             $totalCostoPedido += $sub;
-                            $resumenHtml .= "<tr class='border-b border-gray-100 dark:border-gray-800/50 hover:bg-gray-50 dark:hover:bg-gray-800/30'>
+                            $resumenHtml .= "<tr class='border-b border-gray-100 dark:border-gray-800/50 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors'>
                                                 <td class='px-3 py-2 font-medium text-gray-900 dark:text-white'>{$item->article->code} - {$item->article->name}</td>
                                                 <td class='px-3 py-2 text-center'>{$item->total_qty}</td>
                                                 <td class='px-3 py-2 text-right font-mono'>$" . number_format($sub, 2) . "</td>
                                             </tr>";
                         }
-                        
                         $resumenHtml .= "</tbody><tfoot>
                                             <tr class='font-bold text-gray-900 dark:text-white uppercase'>
-                                                <td class='px-3 pt-4'>TOTAL CONSOLIDADO</td>
+                                                <td class='px-3 pt-4 font-black'>TOTAL CONSOLIDADO</td>
                                                 <td class='px-3 pt-4 text-center'>".$itemsAgrupados->sum('total_qty')."</td>
                                                 <td class='px-3 pt-4 text-right text-lg text-success-600 dark:text-success-400'>$" . number_format($totalCostoPedido, 2) . "</td>
                                             </tr>
-                                        </tfoot>";
-                        $resumenHtml .= "</table></div>";
+                                        </tfoot></table></div>";
 
                         return [
                             Forms\Components\Placeholder::make('resumen_carga')
-                                ->label('Detalle de Carga Real')
+                                ->label('Detalle de Mercadería Real')
                                 ->content(new HtmlString($resumenHtml)),
 
-                            // SECCIÓN 1: COMPROBANTE (Una sola fila de ancho completo, con 2 columnas internas)
+                            // SECCIÓN 1: COMPROBANTE (2 columnas internas alineadas)
                             Forms\Components\Section::make('Configuración del Comprobante')
                                 ->icon('heroicon-m-document-text')
                                 ->schema([
                                     Forms\Components\Grid::make(2)->schema([
                                         Forms\Components\Select::make('billing_type')
-                                            ->label('Tipo de Facturación')
-                                            ->options(['fiscal' => 'Fiscal (AFIP)', 'informal' => 'Interno', 'mixed' => 'Mixto'])
+                                            ->label('Tipo Facturación')
+                                            ->options(['fiscal' => 'Fiscal (AFIP)', 'informal' => 'Interno (Remito)', 'mixed' => 'Mixto (Paridad)'])
                                             ->default($record->client->billing_type ?? 'mixed')
                                             ->required()->live(),
-                                        Forms\Components\TextInput::make('invoice_number')
-                                            ->label('Número Sugerido')
-                                            ->placeholder('Esperando AFIP...')
-                                            ->required(),
+                                        Forms\Components\Placeholder::make('info_afip')
+                                            ->label('Número de Factura')
+                                            ->content('Se obtendrá automáticamente de AFIP al confirmar'),
                                     ]),
                                 ]),
 
-                            // SECCIÓN 2: PAGO (Debajo de la anterior, también con 2 columnas internas)
+                            // SECCIÓN 2: PAGO (2 columnas internas alineadas)
                             Forms\Components\Section::make('Información de Pago')
                                 ->icon('heroicon-m-banknotes')
                                 ->schema([
@@ -337,60 +331,101 @@ class OrderResource extends Resource
                                             ->options(['cta_cte' => 'Cuenta Corriente', 'efectivo' => 'Efectivo', 'transferencia' => 'Transferencia', 'cheque' => 'Cheque'])
                                             ->default($record->client->last_payment_method ?? 'cta_cte')
                                             ->required()->live(),
-
-                                        // Inputs de Transferencia
+                                        
+                                        // Campos de Transferencia alineados
                                         Forms\Components\TextInput::make('bank_name')
-                                            ->label('Banco de Origen')
-                                            ->visible(fn (Get $get) => $get('payment_method') === 'transferencia')
+                                            ->label('Banco Origen')
+                                            ->placeholder('Ej: Galicia / MP')
+                                            ->hidden(fn (Get $get) => $get('payment_method') !== 'transferencia')
                                             ->required(fn (Get $get) => $get('payment_method') === 'transferencia'),
                                         Forms\Components\TextInput::make('transaction_id')
                                             ->label('ID Operación / Ref.')
-                                            ->visible(fn (Get $get) => $get('payment_method') === 'transferencia')
+                                            ->hidden(fn (Get $get) => $get('payment_method') !== 'transferencia')
                                             ->required(fn (Get $get) => $get('payment_method') === 'transferencia'),
 
-                                        // Inputs de Cheque
+                                        // Campos de Cheque alineados
                                         Forms\Components\TextInput::make('check_number')
                                             ->label('Número de Cheque')
-                                            ->visible(fn (Get $get) => $get('payment_method') === 'cheque')
+                                            ->hidden(fn (Get $get) => $get('payment_method') !== 'cheque')
                                             ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
                                         Forms\Components\DatePicker::make('due_date')
                                             ->label('Fecha de Vencimiento')
-                                            ->visible(fn (Get $get) => $get('payment_method') === 'cheque')
+                                            ->hidden(fn (Get $get) => $get('payment_method') !== 'cheque')
                                             ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
                                     ]),
                                 ]),
                         ];
                     })
                     ->action(function (Order $record, array $data) {
-                        $totalPrendas = $record->items->sum('packed_quantity');
-                        
-                        if ($data['billing_type'] === 'mixed' && $totalPrendas % 2 !== 0) {
-                            Notification::make()->danger()->title('Error: Cantidad Impar')->body('El modo Mixto requiere un total par para el desglose.')->send();
-                            return;
-                        }
-
-                        DB::transaction(function () use ($record, $data) {
-                            $record->client->update(['billing_type' => $data['billing_type'], 'last_payment_method' => $data['payment_method']]);
-
-                            $record->invoice()->create([
-                                'number' => $data['invoice_number'],
-                                'type' => $data['billing_type'],
-                                'total_amount' => $record->total_amount,
-                                'status' => 'issued',
-                                'notes' => match($data['payment_method']) {
-                                    'transferencia' => "Banco: {$data['bank_name']} | Ref: {$data['transaction_id']}",
-                                    'cheque' => "Cheque Nro: {$data['check_number']} | Vence: {$data['due_date']}",
-                                    default => "Pago vía: {$data['payment_method']}"
-                                }
+                        try {
+                            $afip = new \Afip([
+                                'CUIT'       => 30633784104,
+                                'production' => false,
+                                'cert'       => 'cert',
+                                'key'        => 'key',
+                                'res_folder' => storage_path('app/afip/')
                             ]);
 
-                            if ($data['payment_method'] === 'cta_cte') {
-                                $record->client->increment('debt', $record->total_amount);
-                            }
+                            // Intentamos obtener el estado para validar el token de entrada
+                            $server_status = $afip->ElectronicBilling->GetServerStatus();
+                            
+                            // Datos para Factura B (Tipo 6) - Ejemplo simplificado
+                            $last_voucher = $afip->ElectronicBilling->GetLastVoucher(1, 6);
+                            $next_voucher = $last_voucher + 1;
 
-                            $record->update(['status' => OrderStatus::Checked]);
-                        });
-                        Notification::make()->success()->title('Pedido Facturado y Verificado').send();
+                            $request_data = [
+                                'CantReg'      => 1,
+                                'PtoVta'       => 1,
+                                'CbteTipo'     => 6, 
+                                'Concepto'     => 1, // Productos
+                                'DocTipo'      => 99, // Consumidor Final (ajustar según cliente)
+                                'DocNro'       => 0,
+                                'CbteDesde'    => $next_voucher,
+                                'CbteHasta'    => $next_voucher,
+                                'CbteFch'      => date('Ymd'),
+                                'ImpTotal'     => $record->total_amount,
+                                'ImpTotConc'   => 0,
+                                'ImpNeto'      => round($record->total_amount / 1.21, 2),
+                                'ImpOpEx'      => 0,
+                                'ImpIVA'       => round($record->total_amount - ($record->total_amount / 1.21), 2),
+                                'ImpTrib'      => 0,
+                                'MonId'        => 'PES',
+                                'MonCotiz'     => 1,
+                                'Iva'          => [
+                                    [
+                                        'Id'     => 5, // 21%
+                                        'BaseImp'=> round($record->total_amount / 1.21, 2),
+                                        'Importe'=> round($record->total_amount - ($record->total_amount / 1.21), 2)
+                                    ]
+                                ]
+                            ];
+
+                            $res = $afip->ElectronicBilling->CreateVoucher($request_data);
+                            
+                            $cae = $res['CAE'];
+                            $vtocae = $res['CAEFchVto'];
+
+                            DB::transaction(function () use ($record, $data, $next_voucher, $cae, $vtocae) {
+                                $record->invoice()->create([
+                                    'number' => '0001-' . str_pad($next_voucher, 8, '0', STR_PAD_LEFT),
+                                    'type' => $data['billing_type'],
+                                    'total_amount' => $record->total_amount,
+                                    'status' => 'issued',
+                                    'cae' => $cae,
+                                    'due_date' => $vtocae,
+                                    'notes' => "Metodo: {$data['payment_method']}"
+                                ]);
+
+                                $record->update(['status' => OrderStatus::Checked]);
+                            });
+
+                            Notification::make()->success()->title("Factura B #$next_voucher generada")->send();
+
+                        } catch (\Exception $e) {
+                            // Este log es vital para ver si el error es 'Permission Denied' en el XML
+                            \Log::error("Error AFIP: " . $e->getMessage());
+                            Notification::make()->danger()->title('Error AFIP')->body($e->getMessage())->send();
+                        }
                     })
                     ->requiresConfirmation()
             ])
