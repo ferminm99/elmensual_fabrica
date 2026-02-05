@@ -65,12 +65,11 @@ class ClientResource extends Resource
                             ->suffix('%'),
 
                         // --- SISTEMA DE REFERIDOS ---
-                        Forms\Components\Select::make('referred_by_id')
+                        Forms\Components\Select::make('salesman_id')
                             ->label('Viajante Asignado')
-                            ->relationship('salesman', 'name') // Usa la relación definida en el paso anterior
+                            ->relationship('salesman', 'name') // Usa la tabla salesmen
                             ->searchable()
-                            ->preload()
-                            ->placeholder('Seleccione un viajante'),
+                            ->preload(),
                             
                     ])->columns(2),
 

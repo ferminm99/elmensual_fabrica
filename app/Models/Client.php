@@ -70,7 +70,8 @@ class Client extends Model
 
     public function salesman(): BelongsTo
     {
-        return $this->belongsTo(Salesman::class, 'referred_by_id');
+        // Usamos salesman_id que es la columna que tenés en la DB
+        return $this->belongsTo(Salesman::class, 'salesman_id');
     }
     // 2. Modifica el método para que sea más dinámico
     public function getAfipTaxConditionCode(): int

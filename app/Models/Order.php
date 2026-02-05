@@ -38,6 +38,7 @@ class Order extends Model
     protected $casts = [
         'locked_at' => 'datetime',
         'status' => OrderStatus::class,
+        'origin' => \App\Enums\Origin::class,
         'order_date' => 'date',
         'invoiced_at' => 'datetime',
         'delivered_at' => 'datetime',

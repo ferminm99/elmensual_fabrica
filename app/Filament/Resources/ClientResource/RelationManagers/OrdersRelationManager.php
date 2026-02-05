@@ -62,14 +62,21 @@ class OrdersRelationManager extends RelationManager
                 Tables\Columns\TextColumn::make('origin')
                     ->label('Origen')
                     ->badge()
-                    ->formatStateUsing(fn (Origin $state): string => match ($state) {
-                        Origin::FISCAL => 'Blanco',
-                        Origin::INTERNAL => 'Negro',
-                        default => 'Otro',
+                    ->formatStateUsing(function ($state) {
+                        // Si ya es el Enum, lo usamos. Si es string, intentamos convertirlo.
+                        $status = $state instanceof \App\Enums\Origin 
+                            ? $state 
+                            : \App\Enums\Origin::tryFrom($state);
+
+                        return match ($status) {
+                            \App\Enums\Origin::FISCAL => 'Blanco',
+                            \App\Enums\Origin::INTERNAL => 'Negro',
+                            default => 'Otro/Desconocido',
+                        };
                     })
                     ->colors([
-                        'success' => Origin::FISCAL,
-                        'danger' => Origin::INTERNAL,
+                        'success' => \App\Enums\Origin::FISCAL,
+                        'danger' => \App\Enums\Origin::INTERNAL,
                     ]),
             ])
             ->filters([
