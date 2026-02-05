@@ -51,6 +51,12 @@ class ClientResource extends Resource
                             ->tel()
                             ->maxLength(255),
 
+                        Forms\Components\Select::make('afip_tax_condition_id')
+                            ->label('Condición frente al IVA')
+                            ->options(Client::AFIP_TAX_CONDITIONS)
+                            ->default(5)
+                            ->required(),    
+
                         // --- TU SISTEMA DE DESCUENTOS ---
                         Forms\Components\TextInput::make('default_discount')
                             ->label('Descuento Fijo (%)')
@@ -60,10 +66,12 @@ class ClientResource extends Resource
 
                         // --- SISTEMA DE REFERIDOS ---
                         Forms\Components\Select::make('referred_by_id')
-                            ->label('Referido por')
-                            ->options(\App\Models\Client::pluck('name', 'id'))
+                            ->label('Viajante Asignado')
+                            ->relationship('salesman', 'name') // Usa la relación definida en el paso anterior
                             ->searchable()
-                            ->placeholder('Seleccione al cliente que lo recomendó'),
+                            ->preload()
+                            ->placeholder('Seleccione un viajante'),
+                            
                     ])->columns(2),
 
                 Forms\Components\Section::make('Ubicación y Logística')

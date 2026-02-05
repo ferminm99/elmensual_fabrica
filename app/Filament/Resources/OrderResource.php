@@ -358,37 +358,36 @@ class OrderResource extends Resource
                     })
                     ->action(function (Order $record, array $data) {
                         try {
-                            // 1. Instancia limpia (aprovechando los SYMLINKS que creamos)
-                            // No necesitamos pasar rutas absolutas porque la librería las busca en su carpeta interna
-                            // y los symlinks la redirigen a storage/app/afip/
+                            $client = $record->client; // Obtenemos el objeto cliente
+
                             $afip = new \Afip([
-                                'CUIT'        => 30633784104, // CUIT de la Fábrica (Representado)
+                                'CUIT'        => 30633784104,
                                 'production'  => false,
-                                'cert'        => 'cert',      // Nombre del symlink
-                                'key'         => 'key',       // Nombre del symlink
+                                'cert'        => 'cert',
+                                'key'         => 'key',
                                 'token_dir'   => storage_path('app/afip/xml/'),
                             ]);
 
-                            // 2. Seteo de delegación (Tu CUIT como representante)
                             $afip->owner_CUIT = 20219177713;
 
-                            // 3. Cálculos de IVA (Precisión AFIP)
+                            // Cálculos
                             $total = round($record->total_amount, 2);
                             $neto  = round($total / 1.21, 2);
                             $iva   = round($total - $neto, 2);
 
-                            // 4. Obtener próximo comprobante
                             $last_voucher = $afip->ElectronicBilling->GetLastVoucher(1, 6);
                             $next_voucher = $last_voucher + 1;
 
-                            // 5. Preparar Request
                             $request_data = [
                                 'CantReg'      => 1,
                                 'PtoVta'       => 1,
-                                'CbteTipo'     => 6, // Factura B
-                                'Concepto'     => 1, // Productos
-                                'DocTipo'      => 99, // Consumidor Final
-                                'DocNro'       => 0,
+                                'CbteTipo'     => 6, 
+                                'Concepto'     => 1,
+                                // --- DATOS DINÁMICOS DEL CLIENTE ---
+                                'DocTipo' => $client->tax_id ? 80 : 99,
+                                'DocNro' => $client->tax_id ? (float)str_replace('-', '', $client->tax_id) : 0,
+                                'CondicionIvaReceptor' => $client->getAfipTaxConditionCode(),
+                                // -----------------------------------
                                 'CbteDesde'    => $next_voucher,
                                 'CbteHasta'    => $next_voucher,
                                 'CbteFch'      => date('Ymd'),
@@ -402,20 +401,18 @@ class OrderResource extends Resource
                                 'MonCotiz'     => 1,
                                 'Iva'          => [
                                     [
-                                        'Id'      => 5, // 21%
+                                        'Id'      => 5,
                                         'BaseImp' => $neto,
                                         'Importe' => $iva
                                     ]
                                 ]
                             ];
 
-                            // 6. Ejecución
                             $res = $afip->ElectronicBilling->CreateVoucher($request_data);
                             
                             $cae = $res['CAE'];
                             $vtocae = $res['CAEFchVto'];
 
-                            // 7. Persistencia
                             DB::transaction(function () use ($record, $data, $next_voucher, $cae, $vtocae) {
                                 $record->client->update([
                                     'billing_type' => $data['billing_type'], 
@@ -429,7 +426,7 @@ class OrderResource extends Resource
                                     'status' => 'issued',
                                     'cae' => $cae,
                                     'due_date' => $vtocae,
-                                    'notes' => "Factura generada vía AFIP (Homologación). Pago: {$data['payment_method']}"
+                                    'notes' => "Factura generada vía AFIP. Cliente: {$record->client->name}"
                                 ]);
 
                                 $record->update(['status' => OrderStatus::Checked]);
@@ -439,12 +436,7 @@ class OrderResource extends Resource
 
                         } catch (\Exception $e) {
                             \Log::error("ERROR AFIP ERP: " . $e->getMessage());
-                            Notification::make()
-                                ->danger()
-                                ->title('Error AFIP')
-                                ->body($e->getMessage())
-                                ->persistent()
-                                ->send();
+                            Notification::make()->danger()->title('Error AFIP')->body($e->getMessage())->persistent()->send();
                         }
                     })
                     ->requiresConfirmation()

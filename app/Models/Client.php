@@ -28,6 +28,14 @@ class Client extends Model
         'default_discount' => 'decimal:2', 
     ];
 
+    public const AFIP_TAX_CONDITIONS = [
+        1 => 'Responsable Inscripto',
+        5 => 'Consumidor Final',
+        6 => 'Exento',
+        13 => 'Monotributista',
+    ];
+
+
     // --- RELACIONES ---
 
     public function locality(): BelongsTo
@@ -58,6 +66,29 @@ class Client extends Model
     public function payments(): HasMany
     {
         return $this->hasMany(Transaction::class)->orderBy('created_at', 'desc');
+    }
+
+    public function salesman(): BelongsTo
+    {
+        return $this->belongsTo(Salesman::class, 'referred_by_id');
+    }
+    // 2. Modifica el método para que sea más dinámico
+    public function getAfipTaxConditionCode(): int
+    {
+        // Si ya tienes el ID en la base de datos (después de la migración), úsalo
+        if (!empty($this->afip_tax_condition_id)) {
+            return (int) $this->afip_tax_condition_id;
+        }
+
+        // Si no, intentamos mapear el texto que ya tienes guardado
+        $condition = strtoupper($this->tax_condition ?? '');
+        
+        return match (true) {
+            str_contains($condition, 'INSCRIPTO') => 1,
+            str_contains($condition, 'MONOTRIBUTO') => 13,
+            str_contains($condition, 'EXENTO') => 6,
+            default => 5, // Valor por defecto: Consumidor Final
+        };
     }
 
     // --- LÓGICA DE NEGOCIO (FIFO) ---
