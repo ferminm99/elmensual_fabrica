@@ -358,54 +358,70 @@ class OrderResource extends Resource
                     })
                     ->action(function (Order $record, array $data) {
                         try {
+                            // 1. Instancia limpia (aprovechando los SYMLINKS que creamos)
+                            // No necesitamos pasar rutas absolutas porque la librería las busca en su carpeta interna
+                            // y los symlinks la redirigen a storage/app/afip/
                             $afip = new \Afip([
-                                'CUIT'       => 30633784104,
-                                'production' => false,
-                                'cert'       => 'cert',
-                                'key'        => 'key',
-                                'res_folder' => storage_path('app/afip/')
+                                'CUIT'        => 30633784104, // CUIT de la Fábrica (Representado)
+                                'production'  => false,
+                                'cert'        => 'cert',      // Nombre del symlink
+                                'key'         => 'key',       // Nombre del symlink
+                                'token_dir'   => storage_path('app/afip/xml/'),
                             ]);
 
-                            // Intentamos obtener el estado para validar el token de entrada
-                            $server_status = $afip->ElectronicBilling->GetServerStatus();
-                            
-                            // Datos para Factura B (Tipo 6) - Ejemplo simplificado
+                            // 2. Seteo de delegación (Tu CUIT como representante)
+                            $afip->owner_CUIT = 20219177713;
+
+                            // 3. Cálculos de IVA (Precisión AFIP)
+                            $total = round($record->total_amount, 2);
+                            $neto  = round($total / 1.21, 2);
+                            $iva   = round($total - $neto, 2);
+
+                            // 4. Obtener próximo comprobante
                             $last_voucher = $afip->ElectronicBilling->GetLastVoucher(1, 6);
                             $next_voucher = $last_voucher + 1;
 
+                            // 5. Preparar Request
                             $request_data = [
                                 'CantReg'      => 1,
                                 'PtoVta'       => 1,
-                                'CbteTipo'     => 6, 
+                                'CbteTipo'     => 6, // Factura B
                                 'Concepto'     => 1, // Productos
-                                'DocTipo'      => 99, // Consumidor Final (ajustar según cliente)
+                                'DocTipo'      => 99, // Consumidor Final
                                 'DocNro'       => 0,
                                 'CbteDesde'    => $next_voucher,
                                 'CbteHasta'    => $next_voucher,
                                 'CbteFch'      => date('Ymd'),
-                                'ImpTotal'     => $record->total_amount,
+                                'ImpTotal'     => $total,
                                 'ImpTotConc'   => 0,
-                                'ImpNeto'      => round($record->total_amount / 1.21, 2),
+                                'ImpNeto'      => $neto,
                                 'ImpOpEx'      => 0,
-                                'ImpIVA'       => round($record->total_amount - ($record->total_amount / 1.21), 2),
+                                'ImpIVA'       => $iva,
                                 'ImpTrib'      => 0,
                                 'MonId'        => 'PES',
                                 'MonCotiz'     => 1,
                                 'Iva'          => [
                                     [
-                                        'Id'     => 5, // 21%
-                                        'BaseImp'=> round($record->total_amount / 1.21, 2),
-                                        'Importe'=> round($record->total_amount - ($record->total_amount / 1.21), 2)
+                                        'Id'      => 5, // 21%
+                                        'BaseImp' => $neto,
+                                        'Importe' => $iva
                                     ]
                                 ]
                             ];
 
+                            // 6. Ejecución
                             $res = $afip->ElectronicBilling->CreateVoucher($request_data);
                             
                             $cae = $res['CAE'];
                             $vtocae = $res['CAEFchVto'];
 
+                            // 7. Persistencia
                             DB::transaction(function () use ($record, $data, $next_voucher, $cae, $vtocae) {
+                                $record->client->update([
+                                    'billing_type' => $data['billing_type'], 
+                                    'last_payment_method' => $data['payment_method']
+                                ]);
+
                                 $record->invoice()->create([
                                     'number' => '0001-' . str_pad($next_voucher, 8, '0', STR_PAD_LEFT),
                                     'type' => $data['billing_type'],
@@ -413,18 +429,22 @@ class OrderResource extends Resource
                                     'status' => 'issued',
                                     'cae' => $cae,
                                     'due_date' => $vtocae,
-                                    'notes' => "Metodo: {$data['payment_method']}"
+                                    'notes' => "Factura generada vía AFIP (Homologación). Pago: {$data['payment_method']}"
                                 ]);
 
                                 $record->update(['status' => OrderStatus::Checked]);
                             });
 
-                            Notification::make()->success()->title("Factura B #$next_voucher generada")->send();
+                            Notification::make()->success()->title("Factura B #$next_voucher generada con éxito")->send();
 
                         } catch (\Exception $e) {
-                            // Este log es vital para ver si el error es 'Permission Denied' en el XML
-                            \Log::error("Error AFIP: " . $e->getMessage());
-                            Notification::make()->danger()->title('Error AFIP')->body($e->getMessage())->send();
+                            \Log::error("ERROR AFIP ERP: " . $e->getMessage());
+                            Notification::make()
+                                ->danger()
+                                ->title('Error AFIP')
+                                ->body($e->getMessage())
+                                ->persistent()
+                                ->send();
                         }
                     })
                     ->requiresConfirmation()
