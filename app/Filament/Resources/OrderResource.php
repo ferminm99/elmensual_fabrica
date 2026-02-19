@@ -1,5 +1,4 @@
 <?php
-
 namespace App\Filament\Resources;
 
 use App\Enums\OrderStatus;

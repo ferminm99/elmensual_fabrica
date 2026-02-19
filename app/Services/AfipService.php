@@ -110,63 +110,59 @@ class AfipService
     /**
      * Método principal para Facturar
      */
-   public static function facturar(Order $record, array $data)
+    public static function facturar(Order $record, array $data)
     {
         try {
             self::init();
             $auth = self::getAuth();
-            $wsfe = self::getWsfeClient(); // Usamos el cliente con auto-healing
+            $wsfe = self::getWsfeClient();
 
-            // Preparar Factura B (Código 6)
-            $tipo_cbte = 6; 
+            $tipo_cbte = 6; // Factura B
             
             $ultimo = $wsfe->FECompUltimoAutorizado([
                 'Auth' => $auth, 'PtoVta' => self::$PV, 'CbteTipo' => $tipo_cbte
             ]);
             $next = $ultimo->FECompUltimoAutorizadoResult->CbteNro + 1;
 
-            // 1. Cálculos de base
+            // --- CORRECCIÓN CRÍTICA: total_amount es del Pedido ---
             $total = round($record->total_amount, 2);
+
+            // Fallback: Si el total es 0, lo calculamos de los items para no fallar
+            if ($total <= 0) {
+                $total = round($record->items->sum(fn($i) => $i->packed_quantity * $i->unit_price), 2);
+            }
+
+            if ($total <= 0) {
+                throw new Exception("El pedido no tiene un monto válido para facturar (Monto: $total).");
+            }
+
             $neto  = round($total / 1.21, 2);
             $iva   = round($total - $neto, 2);
 
-            // 2. Detección automática: Si el IVA es muy chico, usamos tasa 0%
+            // Ajuste de alícuota si el IVA es despreciable
             if ($iva <= 0) {
-                $alicIvaId = 3;    // IVA 0%
+                $alicIvaId = 3; // IVA 0%
                 $baseImp   = $total; 
                 $iva       = 0;
             } else {
-                $alicIvaId = 5;    // IVA 21%
+                $alicIvaId = 5; // IVA 21%
                 $baseImp   = $neto;
             }
 
-            // 3. Estructura del Request corregida
             $req = [
                 'Auth' => $auth,
                 'FeCAEReq' => [
                     'FeCabReq' => ['CantReg' => 1, 'PtoVta' => self::$PV, 'CbteTipo' => $tipo_cbte],
                     'FeDetReq' => [
                         'FECAEDetRequest' => [
-                            'Concepto'   => 1, 
-                            'DocTipo'    => 99, 
-                            'DocNro'     => 0,
-                            'CbteDesde'  => $next, 
-                            'CbteHasta'  => $next, 
-                            'CbteFch'    => date('Ymd'),
-                            'ImpTotal'   => $total, 
-                            'ImpTotConc' => 0, 
-                            'ImpNeto'    => $baseImp, // Usar la variable calculada
-                            'ImpOpEx'    => 0, 
-                            'ImpIVA'     => $iva,     // Usar la variable calculada
-                            'ImpTrib'    => 0, 
-                            'MonId'      => 'PES', 
-                            'MonCotiz'   => 1,
-                            'Iva' => [
-                                'AlicIva' => [
-                                    [
-                                        'Id'      => $alicIvaId, // ID dinámico (3 o 5)
-                                        'BaseImp' => $baseImp,   // Siempre mayor a 0
-                                        'Importe' => $iva
+                            [
+                                'Concepto' => 1, 'DocTipo' => 99, 'DocNro' => 0,
+                                'CbteDesde' => $next, 'CbteHasta' => $next, 'CbteFch' => date('Ymd'),
+                                'ImpTotal' => $total, 'ImpTotConc' => 0, 'ImpNeto' => $baseImp,
+                                'ImpOpEx' => 0, 'ImpIVA' => $iva, 'ImpTrib' => 0, 'MonId' => 'PES', 'MonCotiz' => 1,
+                                'Iva' => [
+                                    'AlicIva' => [
+                                        ['Id' => $alicIvaId, 'BaseImp' => $baseImp, 'Importe' => $iva]
                                     ]
                                 ]
                             ]
@@ -175,38 +171,31 @@ class AfipService
                 ]
             ];
 
+            \Illuminate\Support\Facades\Log::info("Enviando a AFIP Pedido #{$record->id}. Total Real: $total", $req);
+
             $res = $wsfe->FECAESolicitar($req);
 
             if ($res->FECAESolicitarResult->FeCabResp->Resultado == 'A') {
                 $cae = $res->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE;
 
-                // GUARDADO ADAPTADO A TU MIGRACIÓN ACTUAL
                 DB::transaction(function () use ($record, $cae, $total) {
                     $record->invoice()->create([
-                        'invoice_type' => 'B',          // Mapeamos 6 -> 'B'
-                        'total_fiscal' => $total,       // Columna correcta
-                        'cae_afip'     => $cae,         // Columna correcta
-                        // Nota: Tu tabla no tiene columna 'number' ni 'status', así que no las guardamos.
+                        'invoice_type' => 'B',
+                        'total_fiscal' => $total, // Aquí SÍ va total_fiscal porque es la tabla invoices
+                        'cae_afip'     => $cae,
                     ]);
                     $record->update(['status' => OrderStatus::Checked]);
                 });
 
                 return ['success' => true, 'message' => "Factura B aprobada (CAE: $cae)"];
             } else {
-                $errorMsg = 'Error desconocido';
-    
-                if (isset($res->FECAESolicitarResult->Errors)) {
-                    $errorMsg = $res->FECAESolicitarResult->Errors->Err->Msg;
-                } elseif (isset($res->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones)) {
-                    $obs = $res->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones->Obs;
-                    $errorMsg = is_array($obs) ? $obs[0]->Msg : $obs->Msg;
-                }
-                
-                return ['success' => false, 'error' => "Rechazo AFIP: " . $errorMsg];
+                // Captura de error real de AFIP
+                $err = $res->FECAESolicitarResult->Errors->Err->Msg 
+                       ?? $res->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones->Obs->Msg 
+                       ?? 'Error desconocido';
+                return ['success' => false, 'error' => "Rechazo AFIP: " . $err];
             }
-
         } catch (Exception $e) {
-            Log::error("AFIP ERROR: " . $e->getMessage());
             return ['success' => false, 'error' => "Error técnico: " . $e->getMessage()];
         }
     }
