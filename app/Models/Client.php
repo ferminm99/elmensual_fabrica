@@ -92,6 +92,22 @@ class Client extends Model
         };
     }
 
+    public function autoAssignSalesman()
+    {
+        if (!$this->locality_id) return;
+
+        // Buscamos un viajante que tenga asignada la zona de este cliente
+        $zoneId = $this->locality->zone_id;
+
+        $salesman = \App\Models\Salesman::whereHas('zones', function ($query) use ($zoneId) {
+            $query->where('zones.id', $zoneId);
+        })->first();
+
+        if ($salesman) {
+            $this->update(['salesman_id' => $salesman->id]);
+        }
+    }
+
     // --- LÓGICA DE NEGOCIO (FIFO) ---
 
     public function distributePayment(float $amount, string $originType)

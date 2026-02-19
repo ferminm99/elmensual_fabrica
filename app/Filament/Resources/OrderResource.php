@@ -42,17 +42,26 @@ class OrderResource extends Resource
                                 ->relationship('client', 'name')
                                 ->searchable()
                                 ->required()
-                                ->disabled(fn (Get $get) => $get('status') !== 'draft'),
+                                ->disabled(function (Get $get) {
+                                    $status = $get('status');
+                                    $val = $status instanceof \BackedEnum ? $status->value : $status;
+                                    return $val !== 'draft';
+                                }),
 
                             Forms\Components\Select::make('billing_type')
                                 ->label('Facturación')
                                 ->options(['fiscal' => 'Fiscal', 'informal' => 'Interno', 'mixed' => 'Mixto'])
                                 ->default('fiscal')
                                 ->required()
-                                ->disabled(fn (Get $get) => !in_array($get('status'), ['draft', 'processing', 'standby'])),
+                                ->disabled(function (Get $get) {
+                                    $status = $get('status');
+                                    $val = $status instanceof \BackedEnum ? $status->value : $status;
+                                    return !in_array($val, ['draft', 'processing', 'standby']);
+                                }),
                            
                             Forms\Components\Select::make('status')
                                 ->options(OrderStatus::class)
+                                ->default(OrderStatus::Draft) // IMPORTANTE: Arranca en Borrador
                                 ->live()
                                 ->required()
                                 ->disableOptionWhen(function ($value, ?Order $record, Get $get) {
@@ -61,32 +70,25 @@ class OrderResource extends Resource
                                     $dbStatus = $record->getOriginal('status');
                                     if ($dbStatus instanceof \BackedEnum) $dbStatus = $dbStatus->value;
 
-                                    // --- REGLA: MIXTO SIEMPRE PAR ---
-                                    // Si el modo de facturación es mixto, el total de prendas armadas debe ser par.
                                     if ($get('billing_type') === 'mixed') {
                                         $totalArmado = $record->items->sum('packed_quantity');
                                         if ($totalArmado % 2 !== 0 && in_array($value, ['checked', 'dispatched', 'paid'])) {
-                                            return true; // Bloquea avanzar si es impar
+                                            return true; 
                                         }
                                     }
 
-                                    // --- REGLA: ENTRADA A STANDBY ---
                                     if ($value === 'standby') {
                                         $estadosHabilitantes = ['assembled', 'checked', 'dispatched'];
                                         return !in_array($dbStatus, $estadosHabilitantes);
                                     }
 
-                                    // --- REGLA: OBLIGAR FACTURACIÓN (EL CAMBIO CLAVE) ---
-                                    // Si el usuario intenta elegir Verificado o superior manualmente...
                                     if (in_array($value, ['checked', 'dispatched', 'paid'])) {
-                                        // Si el pedido NO tiene factura registrada, BLOQUEAMOS el select manual.
-                                        // Esto obliga a usar el botón "Facturar" de la tabla.
-                                        if (!$record->invoice()->exists() && $value !== $dbStatus) {
+                                        // Usamos total_fiscal para validar
+                                        if (!$record->invoice()->where('total_fiscal', '>', 0)->exists() && $value !== $dbStatus) {
                                             return true;
                                         }
                                     }
 
-                                    // --- REGLA: STANDBY HACIA ADELANTE ---
                                     if ($dbStatus === 'standby') {
                                         $permitidos = ['dispatched', 'paid', 'cancelled', 'standby'];
                                         if (!in_array($value, $permitidos)) return true;
@@ -97,7 +99,6 @@ class OrderResource extends Resource
                                         if ($hijosPendientes && in_array($value, ['dispatched', 'paid'])) return true;
                                     }
 
-                                    // --- REGLA: NO RETORNO ---
                                     $estadosCerrados = ['checked', 'dispatched', 'paid'];
                                     if (in_array($dbStatus, $estadosCerrados)) {
                                         if (in_array($value, ['draft', 'processing', 'assembled'])) return true;
@@ -121,7 +122,7 @@ class OrderResource extends Resource
                                 ->label('Fecha')
                                 ->default(now())
                                 ->required()
-                                ->disabled(fn (Get $get) => $get('status') !== 'draft'),
+                                ->disabled(fn (Get $get) => ($get('status') instanceof \BackedEnum ? $get('status')->value : $get('status')) !== 'draft'),
 
                             Forms\Components\Select::make('priority')
                                 ->label('Prioridad')
@@ -136,7 +137,11 @@ class OrderResource extends Resource
                             ->label('Añadir Artículo')
                             ->color('success')
                             ->icon('heroicon-m-plus')
-                            ->visible(fn (Get $get) => in_array($get('status'), ['draft', 'standby']))
+                            ->visible(function (Get $get) {
+                                $status = $get('status');
+                                $val = $status instanceof \BackedEnum ? $status->value : $status;
+                                return in_array($val, ['draft', 'standby']);
+                            })
                             ->form([
                                 Forms\Components\Select::make('article_id')
                                     ->label('Artículo')
@@ -148,7 +153,7 @@ class OrderResource extends Resource
                                     })->searchable()->required()
                             ])
                             ->action(function (array $data, Set $set, Get $get) {
-                                $target = ($get('status') === 'standby') ? 'child_groups' : 'article_groups';
+                                $target = ($get('status') instanceof \BackedEnum && $get('status')->value === 'standby') || $get('status') === 'standby' ? 'child_groups' : 'article_groups';
                                 $groups = $get($target) ?? [];
                                 $article = Article::find($data['article_id']);
                                 $colors = Sku::where('article_id', $article->id)->join('colors', 'colors.id', '=', 'skus.color_id')->select('colors.id', 'colors.name', 'colors.hex_code')->distinct()->get();
@@ -251,195 +256,95 @@ class OrderResource extends Resource
             ])
             ->actions([
                 Tables\Actions\EditAction::make(),
+
                 Tables\Actions\Action::make('descargar_factura')
-                    ->label('Ver PDF')
-                    ->icon('heroicon-o-arrow-down-tray')
+                    ->label('Ver Factura')
+                    ->icon('heroicon-o-document-text')
                     ->color('gray')
-                    ->visible(fn (Order $record) => $record->invoice()->exists())
+                    ->visible(fn (Order $record) => $record->invoice()->where('total_fiscal', '>', 0)->exists())
                     ->url(fn (Order $record) => route('order.invoice.download', $record->id))
                     ->openUrlInNewTab(),
-                // app/Filament/Resources/OrderResource.php
 
                 Tables\Actions\Action::make('facturar')
                     ->label('Facturar')
                     ->icon('heroicon-o-document-check')
                     ->color('success')
                     ->modalWidth('5xl')
-                    ->visible(fn (Order $record) => in_array($record->status->value, ['assembled', 'standby']))
+                    ->visible(fn (Order $record) => in_array($record->status->value, ['assembled', 'standby']) && !$record->invoice()->where('total_fiscal', '>', 0)->exists())
                     ->form(function (Order $record) {
                         $itemsAgrupados = $record->items()
                             ->select('article_id', DB::raw('SUM(packed_quantity) as total_qty'), DB::raw('AVG(unit_price) as price'))
-                            ->groupBy('article_id')
-                            ->having('total_qty', '>', 0)
-                            ->get();
+                            ->groupBy('article_id')->having('total_qty', '>', 0)->get();
 
-                        $totalCostoPedido = 0;
-                        $resumenHtml = "<div class='p-4 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 shadow-sm'>";
-                        $resumenHtml .= "<table class='w-full text-sm text-left text-gray-700 dark:text-gray-300'>";
-                        $resumenHtml .= "<thead class='text-xs uppercase bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'>
-                                            <tr>
-                                                <th class='px-3 py-2 rounded-l-lg'>Artículo / Código</th>
-                                                <th class='px-3 py-2 text-center'>Cant.</th>
-                                                <th class='px-3 py-2 text-right rounded-r-lg'>Subtotal</th>
-                                            </tr>
-                                        </thead><tbody>";
-                        foreach ($itemsAgrupados as $item) {
-                            $sub = $item->total_qty * $item->price;
-                            $totalCostoPedido += $sub;
-                            $resumenHtml .= "<tr class='border-b border-gray-100 dark:border-gray-800/50 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors'>
-                                                <td class='px-3 py-2 font-medium text-gray-900 dark:text-white'>{$item->article->code} - {$item->article->name}</td>
-                                                <td class='px-3 py-2 text-center'>{$item->total_qty}</td>
-                                                <td class='px-3 py-2 text-right font-mono'>$" . number_format($sub, 2) . "</td>
-                                            </tr>";
-                        }
-                        $resumenHtml .= "</tbody><tfoot>
-                                            <tr class='font-bold text-gray-900 dark:text-white uppercase'>
-                                                <td class='px-3 pt-4 font-black'>TOTAL CONSOLIDADO</td>
-                                                <td class='px-3 pt-4 text-center'>".$itemsAgrupados->sum('total_qty')."</td>
-                                                <td class='px-3 pt-4 text-right text-lg text-success-600 dark:text-success-400'>$" . number_format($totalCostoPedido, 2) . "</td>
-                                            </tr>
-                                        </tfoot></table></div>";
+                        $totalCostoPedido = $itemsAgrupados->sum(fn($i) => $i->total_qty * $i->price);
+                        
+                        $resumenHtml = "<div class='p-4 border rounded'><strong>Total a Facturar:</strong> $".number_format($totalCostoPedido, 2)."</div>";
 
                         return [
                             Forms\Components\Placeholder::make('resumen_carga')
-                                ->label('Detalle de Mercadería Real')
+                                ->label('Detalle')
                                 ->content(new HtmlString($resumenHtml)),
 
-                            // SECCIÓN 1: COMPROBANTE (2 columnas internas alineadas)
-                            Forms\Components\Section::make('Configuración del Comprobante')
-                                ->icon('heroicon-m-document-text')
-                                ->schema([
-                                    Forms\Components\Grid::make(2)->schema([
-                                        Forms\Components\Select::make('billing_type')
-                                            ->label('Tipo Facturación')
-                                            ->options(['fiscal' => 'Fiscal (AFIP)', 'informal' => 'Interno (Remito)', 'mixed' => 'Mixto (Paridad)'])
-                                            ->default($record->client->billing_type ?? 'mixed')
-                                            ->required()->live(),
-                                        Forms\Components\Placeholder::make('info_afip')
-                                            ->label('Número de Factura')
-                                            ->content('Se obtendrá automáticamente de AFIP al confirmar'),
-                                    ]),
+                            Forms\Components\Section::make('Configuración')->schema([
+                                Forms\Components\Grid::make(2)->schema([
+                                    Forms\Components\Select::make('billing_type')
+                                        ->label('Tipo Facturación')
+                                        ->options(['fiscal' => 'Fiscal', 'informal' => 'Interno', 'mixed' => 'Mixto'])
+                                        ->default($record->client->billing_type ?? 'mixed')
+                                        ->required()->live(),
+                                    Forms\Components\Placeholder::make('info_afip')->content('Conexión AFIP'),
                                 ]),
+                            ]),
 
-                            // SECCIÓN 2: PAGO (2 columnas internas alineadas)
-                            Forms\Components\Section::make('Información de Pago')
-                                ->icon('heroicon-m-banknotes')
-                                ->schema([
-                                    Forms\Components\Grid::make(2)->schema([
-                                        Forms\Components\Select::make('payment_method')
-                                            ->label('Método de Pago')
-                                            ->options(['cta_cte' => 'Cuenta Corriente', 'efectivo' => 'Efectivo', 'transferencia' => 'Transferencia', 'cheque' => 'Cheque'])
-                                            ->default($record->client->last_payment_method ?? 'cta_cte')
-                                            ->required()->live(),
-                                        
-                                        // Campos de Transferencia alineados
-                                        Forms\Components\TextInput::make('bank_name')
-                                            ->label('Banco Origen')
-                                            ->placeholder('Ej: Galicia / MP')
-                                            ->hidden(fn (Get $get) => $get('payment_method') !== 'transferencia')
-                                            ->required(fn (Get $get) => $get('payment_method') === 'transferencia'),
-                                        Forms\Components\TextInput::make('transaction_id')
-                                            ->label('ID Operación / Ref.')
-                                            ->hidden(fn (Get $get) => $get('payment_method') !== 'transferencia')
-                                            ->required(fn (Get $get) => $get('payment_method') === 'transferencia'),
-
-                                        // Campos de Cheque alineados
-                                        Forms\Components\TextInput::make('check_number')
-                                            ->label('Número de Cheque')
-                                            ->hidden(fn (Get $get) => $get('payment_method') !== 'cheque')
-                                            ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
-                                        Forms\Components\DatePicker::make('due_date')
-                                            ->label('Fecha de Vencimiento')
-                                            ->hidden(fn (Get $get) => $get('payment_method') !== 'cheque')
-                                            ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
-                                    ]),
+                            Forms\Components\Section::make('Información de Pago')->schema([
+                                Forms\Components\Grid::make(2)->schema([
+                                    Forms\Components\Select::make('payment_method')
+                                        ->options(['cta_cte' => 'Cta Cte', 'efectivo' => 'Efectivo', 'transferencia' => 'Transferencia', 'cheque' => 'Cheque'])
+                                        ->default($record->client->last_payment_method ?? 'cta_cte')
+                                        ->required()->live(),
+                                    
+                                    Forms\Components\TextInput::make('bank_name')->label('Banco Origen')->placeholder('Ej: Galicia / MP')
+                                        ->hidden(fn (Get $get) => $get('payment_method') !== 'transferencia')
+                                        ->required(fn (Get $get) => $get('payment_method') === 'transferencia'),
+                                    Forms\Components\TextInput::make('transaction_id')->label('Ref.')
+                                        ->hidden(fn (Get $get) => $get('payment_method') !== 'transferencia')
+                                        ->required(fn (Get $get) => $get('payment_method') === 'transferencia'),
+                                    Forms\Components\TextInput::make('check_number')->label('Nro Cheque')
+                                        ->hidden(fn (Get $get) => $get('payment_method') !== 'cheque')
+                                        ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
+                                    Forms\Components\DatePicker::make('due_date')->label('Vencimiento')
+                                        ->hidden(fn (Get $get) => $get('payment_method') !== 'cheque')
+                                        ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
                                 ]),
+                            ]),
                         ];
                     })
                     ->action(function (Order $record, array $data) {
-                        try {
-                            $client = $record->client; // Obtenemos el objeto cliente
-
-                            $afip = new \Afip([
-                                'CUIT'        => 30633784104,
-                                'production'  => false,
-                                'cert'        => 'cert',
-                                'key'         => 'key',
-                                'token_dir'   => storage_path('app/afip/xml/'),
-                            ]);
-
-                            $afip->owner_CUIT = 20219177713;
-
-                            // Cálculos
-                            $total = round($record->total_amount, 2);
-                            $neto  = round($total / 1.21, 2);
-                            $iva   = round($total - $neto, 2);
-
-                            $last_voucher = $afip->ElectronicBilling->GetLastVoucher(1, 6);
-                            $next_voucher = $last_voucher + 1;
-
-                            $request_data = [
-                                'CantReg'      => 1,
-                                'PtoVta'       => 1,
-                                'CbteTipo'     => 6, 
-                                'Concepto'     => 1,
-                                // --- DATOS DINÁMICOS DEL CLIENTE ---
-                                'DocTipo' => $client->tax_id ? 80 : 99,
-                                'DocNro' => $client->tax_id ? (float)str_replace('-', '', $client->tax_id) : 0,
-                                'CondicionIvaReceptor' => $client->getAfipTaxConditionCode(),
-                                // -----------------------------------
-                                'CbteDesde'    => $next_voucher,
-                                'CbteHasta'    => $next_voucher,
-                                'CbteFch'      => date('Ymd'),
-                                'ImpTotal'     => $total,
-                                'ImpTotConc'   => 0,
-                                'ImpNeto'      => $neto,
-                                'ImpOpEx'      => 0,
-                                'ImpIVA'       => $iva,
-                                'ImpTrib'      => 0,
-                                'MonId'        => 'PES',
-                                'MonCotiz'     => 1,
-                                'Iva'          => [
-                                    [
-                                        'Id'      => 5,
-                                        'BaseImp' => $neto,
-                                        'Importe' => $iva
-                                    ]
-                                ]
-                            ];
-
-                            $res = $afip->ElectronicBilling->CreateVoucher($request_data);
-                            
-                            $cae = $res['CAE'];
-                            $vtocae = $res['CAEFchVto'];
-
-                            DB::transaction(function () use ($record, $data, $next_voucher, $cae, $vtocae) {
-                                $record->client->update([
-                                    'billing_type' => $data['billing_type'], 
-                                    'last_payment_method' => $data['payment_method']
-                                ]);
-
-                                $record->invoice()->create([
-                                    'number' => '0001-' . str_pad($next_voucher, 8, '0', STR_PAD_LEFT),
-                                    'type' => $data['billing_type'],
-                                    'total_amount' => $record->total_amount,
-                                    'status' => 'issued',
-                                    'cae' => $cae,
-                                    'due_date' => $vtocae,
-                                    'notes' => "Factura generada vía AFIP. Cliente: {$record->client->name}"
-                                ]);
-
-                                $record->update(['status' => OrderStatus::Checked]);
-                            });
-
-                            Notification::make()->success()->title("Factura B #$next_voucher generada con éxito")->send();
-
-                        } catch (\Exception $e) {
-                            \Log::error("ERROR AFIP ERP: " . $e->getMessage());
-                            Notification::make()->danger()->title('Error AFIP')->body($e->getMessage())->persistent()->send();
+                        $response = \App\Services\AfipService::facturar($record, $data);
+                        if ($response['success']) {
+                            Notification::make()->success()->title($response['message'])->send();
+                        } else {
+                            Notification::make()->danger()->title('Error AFIP')->body($response['error'])->persistent()->send();
                         }
                     })
+                    ->requiresConfirmation(),
+
+                Tables\Actions\Action::make('anular_factura')
+                    ->label('Anular (NC)')
+                    ->icon('heroicon-o-x-circle')
+                    ->color('danger')
+                    ->visible(fn (Order $record) => $record->invoice()->where('total_fiscal', '>', 0)->exists())
                     ->requiresConfirmation()
+                    ->modalHeading('¿Anular Factura en AFIP?')
+                    ->modalSubmitActionLabel('Sí, Generar Nota de Crédito')
+                    ->action(function (Order $record) {
+                        $response = \App\Services\AfipService::anular($record);
+                        if ($response['success']) {
+                            Notification::make()->success()->title($response['message'])->send();
+                        } else {
+                            Notification::make()->danger()->title('Error al Anular')->body($response['error'])->persistent()->send();
+                        }
+                    }),
             ])
             ->filters([
                 SelectFilter::make('status')->options(OrderStatus::class)->multiple(),

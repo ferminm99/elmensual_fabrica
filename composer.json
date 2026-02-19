@@ -7,7 +7,7 @@
     "license": "MIT",
     "require": {
         "php": "^8.2",
-        "adrianbarabino/afip-php-libre": "^1.1",
+        "afipsdk/afip.php": "^1.2",
         "barryvdh/laravel-dompdf": "^3.1",
         "filament/filament": "^3.2",
         "laravel/framework": "^12.0",

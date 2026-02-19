@@ -4,20 +4,20 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "0d307f0967e22ec2c0a4e71566752cc8",
+    "content-hash": "9cc55a33292e302c8866b5d6d8e76d42",
     "packages": [
         {
-            "name": "adrianbarabino/afip-php-libre",
-            "version": "v1.1.1",
+            "name": "afipsdk/afip.php",
+            "version": "v1.2.0",
             "source": {
                 "type": "git",
-                "url": "https://github.com/adrianbarabino/afip-php-libre.git",
-                "reference": "ecacd10c90a10797e18d4e53e45a420e4b90e439"
+                "url": "https://github.com/AfipSDK/afip.php.git",
+                "reference": "de47c61d66bc44b5d149d6bc238b0a510587dc32"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/adrianbarabino/afip-php-libre/zipball/ecacd10c90a10797e18d4e53e45a420e4b90e439",
-                "reference": "ecacd10c90a10797e18d4e53e45a420e4b90e439",
+                "url": "https://api.github.com/repos/AfipSDK/afip.php/zipball/de47c61d66bc44b5d149d6bc238b0a510587dc32",
+                "reference": "de47c61d66bc44b5d149d6bc238b0a510587dc32",
                 "shasum": ""
             },
             "require": {
@@ -52,10 +52,10 @@
                 "soap"
             ],
             "support": {
-                "issues": "https://github.com/adrianbarabino/afip-php-libre/issues",
-                "source": "https://github.com/adrianbarabino/afip-php-libre/tree/v1.1.1"
+                "issues": "https://github.com/AfipSDK/afip.php/issues",
+                "source": "https://github.com/AfipSDK/afip.php/tree/v1.2.0"
             },
-            "time": "2024-07-06T01:22:55+00:00"
+            "time": "2025-08-21T08:48:40+00:00"
         },
         {
             "name": "anourvalar/eloquent-serialize",

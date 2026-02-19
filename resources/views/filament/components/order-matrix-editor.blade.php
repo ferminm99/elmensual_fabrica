@@ -15,7 +15,13 @@
 
 <div class="space-y-10">
     @php
-        $status = $this->data['status'] ?? 'draft';
+        // CORRECCIÓN CLAVE: Extraer valor del Enum
+        $rawStatus = $this->data['status'] ?? 'draft';
+        $status = $rawStatus instanceof \BackedEnum ? $rawStatus->value : $rawStatus;
+        
+        // Si es null (recién creado), asumimos draft
+        if(is_null($status)) $status = 'draft';
+
         $isEditable = $status === 'draft';
         $isStandby = $status === 'standby';
         
@@ -85,7 +91,8 @@
                                                     @php $qV = (int)($row["qty_{$size->id}"] ?? 0); $pV = (int)($row["packed_{$size->id}"] ?? 0); @endphp
                                                     <div class="matrix-sq-cell {{ $section['editable'] ? 'st-edit shadow-inner' : ($qV == 0 ? 'st-neutral opacity-20' : ($pV >= $qV ? 'st-ok shadow-sm' : ($pV > 0 ? 'st-diff shadow-sm' : 'st-pending shadow-sm'))) }}">
                                                         @if($section['editable'])
-                                                            <input type="number" wire:model.defer="data.{{ $section['key'] }}.{{ $groupKey }}.matrix.{{ $uuid }}.qty_{{ $size->id }}" class="matrix-input-clean">
+                                                            {{-- CORRECCIÓN: Usamos live.debounce para que se sienta fluido --}}
+                                                            <input type="number" wire:model.live.debounce.500ms="data.{{ $section['key'] }}.{{ $groupKey }}.matrix.{{ $uuid }}.qty_{{ $size->id }}" class="matrix-input-clean">
                                                         @else
                                                             <div class="flex flex-col leading-none"><span class="text-sm font-black">{{ $qV }}</span>@if($pV > 0)<span class="text-[7px] font-bold uppercase opacity-80">A:{{ $pV }}</span>@endif</div>
                                                         @endif
