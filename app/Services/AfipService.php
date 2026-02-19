@@ -107,7 +107,7 @@ class AfipService
         }
     }
 
-    /**
+   /**
      * Método principal para Facturar
      */
     public static function facturar(Order $record, array $data)
@@ -124,28 +124,23 @@ class AfipService
             ]);
             $next = $ultimo->FECompUltimoAutorizadoResult->CbteNro + 1;
 
-            // --- CORRECCIÓN CRÍTICA: total_amount es del Pedido ---
+            // --- Lógica de totales original del usuario ---
             $total = round($record->total_amount, 2);
-
-            // Fallback: Si el total es 0, lo calculamos de los items para no fallar
             if ($total <= 0) {
                 $total = round($record->items->sum(fn($i) => $i->packed_quantity * $i->unit_price), 2);
             }
 
-            if ($total <= 0) {
-                throw new Exception("El pedido no tiene un monto válido para facturar (Monto: $total).");
-            }
+            if ($total <= 0) throw new Exception("El pedido no tiene un monto válido para facturar.");
 
             $neto  = round($total / 1.21, 2);
             $iva   = round($total - $neto, 2);
 
-            // Ajuste de alícuota si el IVA es despreciable
             if ($iva <= 0) {
-                $alicIvaId = 3; // IVA 0%
+                $alicIvaId = 3; 
                 $baseImp   = $total; 
                 $iva       = 0;
             } else {
-                $alicIvaId = 5; // IVA 21%
+                $alicIvaId = 5; 
                 $baseImp   = $neto;
             }
 
@@ -171,83 +166,81 @@ class AfipService
                 ]
             ];
 
-            \Illuminate\Support\Facades\Log::info("Enviando a AFIP Pedido #{$record->id}. Total Real: $total", $req);
-
             $res = $wsfe->FECAESolicitar($req);
 
             if ($res->FECAESolicitarResult->FeCabResp->Resultado == 'A') {
-                $cae = $res->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE;
+                // --- FIX ACCESO SEGURO Y NOMBRE DE CAMPO (CAEFchVto) ---
+                $detResponse = $res->FECAESolicitarResult->FeDetResp->FECAEDetResponse;
+                $item = is_array($detResponse) ? $detResponse[0] : $detResponse;
+                
+                $cae = $item->CAE;
+                $vto = $item->CAEFchVto; // AFIP devuelve CAEFchVto, no CAEProxVto
 
-                DB::transaction(function () use ($record, $cae, $total) {
+                DB::transaction(function () use ($record, $cae, $total, $next, $vto) {
                     $record->invoice()->create([
                         'invoice_type' => 'B',
-                        'total_fiscal' => $total, // Aquí SÍ va total_fiscal porque es la tabla invoices
+                        'total_fiscal' => $total,
                         'cae_afip'     => $cae,
+                        'cae_expiry'   => \Illuminate\Support\Carbon::createFromFormat('Ymd', $vto)->format('Y-m-d'),
+                        'number'       => str_pad(self::$PV, 5, '0', STR_PAD_LEFT) . '-' . str_pad($next, 8, '0', STR_PAD_LEFT),
                     ]);
                     $record->update(['status' => OrderStatus::Checked]);
                 });
 
                 return ['success' => true, 'message' => "Factura B aprobada (CAE: $cae)"];
             } else {
-                // Captura de error real de AFIP
                 $err = $res->FECAESolicitarResult->Errors->Err->Msg 
                        ?? $res->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones->Obs->Msg 
                        ?? 'Error desconocido';
                 return ['success' => false, 'error' => "Rechazo AFIP: " . $err];
             }
         } catch (Exception $e) {
-            return ['success' => false, 'error' => "Error técnico: " . $e->getMessage()];
+            return ['success' => false, 'error' => "Error: " . $e->getMessage()];
         }
     }
 
+    /**
+     * Método para Anular
+     */
     public static function anular(Order $order)
     {
         try {
             self::init();
+            $facturaOriginal = $order->invoice()->where('invoice_type', 'B')->latest()->first();
             
-            // Buscamos la última factura fiscal válida
-            $facturaOriginal = $order->invoice()->where('total_fiscal', '>', 0)->latest()->first();
-            
-            if (!$facturaOriginal) {
-                return ['success' => false, 'error' => "No hay factura fiscal para anular."];
+            if (!$facturaOriginal || empty($facturaOriginal->number)) {
+                return ['success' => false, 'error' => "Falta el número de factura original en la BD."];
             }
+
+            $partes = explode('-', $facturaOriginal->number);
+            $nroOriginal = (int) end($partes);
 
             $auth = self::getAuth();
             $wsfe = self::getWsfeClient();
-
-            // Nota de Crédito B (Código 8)
             $tipo_nc = 8; 
             $ultimo = $wsfe->FECompUltimoAutorizado(['Auth' => $auth, 'PtoVta' => self::$PV, 'CbteTipo' => $tipo_nc]);
             $nextNC = $ultimo->FECompUltimoAutorizadoResult->CbteNro + 1;
 
-            $total = round($facturaOriginal->total_fiscal, 2); // Leemos de total_fiscal
+            $total = abs($facturaOriginal->total_fiscal);
             $neto  = round($total / 1.21, 2);
             $iva   = round($total - $neto, 2);
 
-            // Obtenemos el número original de AFIP (Como no guardamos 'number' en BD, 
-            // asumimos que es el último comprobante B autorizado en AFIP para mantener consistencia 
-            // o idealmente deberíamos guardar 'cbte_desde' en la tabla invoices).
-            // DATO CRÍTICO: Al no tener el número de la factura original guardado en 'invoices',
-            // AFIP podría rechazar la NC si no le decimos qué factura anula.
-            // Por ahora enviamos Nro 0 o intentamos recuperar el ID si coincide con el orden.
-            // *Solución parche*: Usamos $facturaOriginal->id asumiendo correlatividad o 0.
-            
             $req = [
                 'Auth' => $auth,
                 'FeCAEReq' => [
                     'FeCabReq' => ['CantReg' => 1, 'PtoVta' => self::$PV, 'CbteTipo' => $tipo_nc],
                     'FeDetReq' => [
                         'FECAEDetRequest' => [
-                            'Concepto' => 1, 'DocTipo' => 99, 'DocNro' => 0,
-                            'CbteDesde' => $nextNC, 'CbteHasta' => $nextNC, 'CbteFch' => date('Ymd'),
-                            'ImpTotal' => $total, 'ImpTotConc' => 0, 'ImpNeto' => $neto, 
-                            'ImpOpEx' => 0, 'ImpIVA' => $iva, 'ImpTrib' => 0, 'MonId' => 'PES', 'MonCotiz' => 1,
-                            'Iva' => ['AlicIva' => [['Id' => 5, 'BaseImp' => $neto, 'Importe' => $iva]]],
-                            'CbtesAsoc' => [
-                                'CbteAsoc' => [
-                                    'Tipo'   => 6, 
-                                    'PtoVta' => self::$PV, 
-                                    'Nro'    => 1 // OJO: Acá deberíamos poner el número real de la factura original.
+                            [
+                                'Concepto' => 1, 'DocTipo' => 99, 'DocNro' => 0,
+                                'CbteDesde' => $nextNC, 'CbteHasta' => $nextNC, 'CbteFch' => date('Ymd'),
+                                'ImpTotal' => $total, 'ImpTotConc' => 0, 'ImpNeto' => ($iva > 0 ? $neto : $total), 
+                                'ImpOpEx' => 0, 'ImpIVA' => $iva, 'ImpTrib' => 0, 'MonId' => 'PES', 'MonCotiz' => 1,
+                                'Iva' => [
+                                    'AlicIva' => [['Id' => ($iva > 0 ? 5 : 3), 'BaseImp' => ($iva > 0 ? $neto : $total), 'Importe' => $iva]]
+                                ],
+                                'CbtesAsoc' => [
+                                    'CbteAsoc' => [['Tipo' => 6, 'PtoVta' => self::$PV, 'Nro' => $nroOriginal]]
                                 ]
                             ]
                         ]
@@ -258,23 +251,27 @@ class AfipService
             $res = $wsfe->FECAESolicitar($req);
 
             if ($res->FECAESolicitarResult->FeCabResp->Resultado == 'A') {
-                $cae = $res->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE;
+                $detResponse = $res->FECAESolicitarResult->FeDetResp->FECAEDetResponse;
+                $item = is_array($detResponse) ? $detResponse[0] : $detResponse;
+                
+                $cae = $item->CAE;
+                $vto = $item->CAEFchVto;
 
-                DB::transaction(function () use ($order, $cae, $total, $facturaOriginal) {
+                DB::transaction(function () use ($order, $cae, $total, $nextNC, $vto, $facturaOriginal) {
                     $order->invoice()->create([
-                        'invoice_type' => 'NC',         // Mapeamos 8 -> 'NC'
-                        'total_fiscal' => -$total,      // Negativo para anular saldo
+                        'invoice_type' => 'NC',
+                        'total_fiscal' => -$total, 
                         'cae_afip'     => $cae,
+                        'cae_expiry'   => \Illuminate\Support\Carbon::createFromFormat('Ymd', $vto)->format('Y-m-d'),
+                        'number'       => str_pad(self::$PV, 5, '0', STR_PAD_LEFT) . '-' . str_pad($nextNC, 8, '0', STR_PAD_LEFT),
                         'parent_id'    => $facturaOriginal->id
                     ]);
                 });
-
-                return ['success' => true, 'message' => "Nota de Crédito generada."];
+                return ['success' => true, 'message' => "Nota de Crédito generada (CAE: $cae)"];
             } else {
-                 $err = $res->FECAESolicitarResult->Errors->Err->Msg ?? 'Error desconocido';
-                 return ['success' => false, 'error' => "Rechazo AFIP: $err"];
+                $err = $res->FECAESolicitarResult->Errors->Err->Msg ?? 'Error AFIP';
+                return ['success' => false, 'error' => "Rechazo AFIP: " . $err];
             }
-
         } catch (Exception $e) {
             return ['success' => false, 'error' => "Error: " . $e->getMessage()];
         }

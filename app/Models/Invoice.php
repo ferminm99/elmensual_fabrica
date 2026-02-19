@@ -9,10 +9,12 @@ class Invoice extends Model
 {
     protected $fillable = [
         'order_id',
-        'cae_afip',      // Antes era 'cae'
-        'invoice_type',  // Antes era 'type' (Enum: A, B, C, NC, ND)
-        'total_fiscal',  // Antes era 'total_amount'
-        'parent_id'      // Para notas de crédito
+        'cae_afip',
+        'invoice_type',
+        'total_fiscal',
+        'parent_id',
+        'number',
+        'cae_expiry',
     ];
 
     public function order(): BelongsTo
