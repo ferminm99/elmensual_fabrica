@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\OrderResource\Pages;
 
 use App\Filament\Resources\OrderResource;
+use App\Models\Sku;
 use Filament\Resources\Pages\CreateRecord;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -11,54 +12,61 @@ class CreateOrder extends CreateRecord
 {
     protected static string $resource = OrderResource::class;
 
-    // ESTA FUNCIÓN ES LA MAGIA: Intercepta el guardado
     protected function handleRecordCreation(array $data): Model
     {
-        // 1. Sacamos los grupos "virtuales" del formulario
-        $articleGroups = $data['article_groups'] ?? [];
+        // 1. Obtenemos la matriz de artículos del estado del formulario
+        $articleGroups = $this->data['article_groups'] ?? [];
         
-        // 2. Los borramos de la data principal para que no fallen al crear la Orden
-        unset($data['article_groups']);
-        
-        // 3. Iniciamos una transacción (por seguridad)
+        // Removemos los datos virtuales para que Filament no explote intentando guardarlos
+        unset($data['article_groups'], $data['child_groups']);
+
         return DB::transaction(function () use ($data, $articleGroups) {
-            
-            // Creamos la cabecera del pedido (Cliente, Fecha, Estado)
+            // 2. Creamos el pedido (cabecera)
             $order = static::getModel()::create($data);
 
             $totalAmount = 0;
 
-            // 4. Recorremos los grupos y guardamos los items reales
+            // 3. Recorremos la matriz y creamos los items asociados
             foreach ($articleGroups as $group) {
-                $articleId = $group['article_id'];
-                $variants = $group['variants'] ?? [];
+                if (!isset($group['matrix']) || !isset($group['article_id'])) continue;
 
-                foreach ($variants as $variant) {
-                    // Calculamos subtotal
-                    $qty = intval($variant['quantity']);
-                    $price = floatval($variant['unit_price']);
-                    $subtotal = $qty * $price;
+                foreach ($group['matrix'] as $row) {
+                    if (!isset($row['color_id'])) continue;
 
-                    // Guardamos el Item en la base de datos
-                    // IMPORTANTE: Asumo que tu tabla se llama 'order_items'
-                    $order->items()->create([
-                        'article_id' => $articleId,
-                        'sku_id'     => $variant['sku_id'],
-                        'color_id'   => $variant['color_id'],
-                        'quantity'   => $qty,
-                        'unit_price' => $price,
-                        'subtotal'   => $subtotal,
-                    ]);
+                    foreach ($row as $k => $val) {
+                        // Buscamos los campos de cantidad que sean mayores a 0
+                        if (str_starts_with($k, 'qty_') && (int)$val > 0) {
+                            $sizeId = str_replace('qty_', '', $k);
+                            
+                            $sku = Sku::where('article_id', $group['article_id'])
+                                ->where('color_id', $row['color_id'])
+                                ->where('size_id', $sizeId)
+                                ->first();
 
-                    $totalAmount += $subtotal;
+                            if ($sku) {
+                                $subtotal = (int)$val * $sku->article->base_cost;
+                                
+                                $order->items()->create([
+                                    'article_id' => $group['article_id'],
+                                    'color_id' => $row['color_id'],
+                                    'sku_id' => $sku->id,
+                                    'quantity' => (int)$val,
+                                    'packed_quantity' => 0, // Nace sin armar
+                                    'unit_price' => $sku->article->base_cost,
+                                    'subtotal' => $subtotal
+                                ]);
+
+                                $totalAmount += $subtotal;
+                            }
+                        }
+                    }
                 }
             }
 
-            // 5. Actualizamos el total final en la orden
+            // 4. Actualizamos el monto total del pedido
             $order->update(['total_amount' => $totalAmount]);
 
             return $order;
         });
     }
-    
 }

@@ -182,25 +182,44 @@ class EditOrder extends EditRecord
                 $record->children()->update(['status' => $newStatus]);
             }
 
-            // GUARDAR PADRE (Tuyo original)
+            // GUARDAR PADRE
             if ($record->status->value === 'draft') {
+                $totalAmount = 0;
+                $skusToKeep = []; // Guardamos registro de lo que SÍ quedó
+
                 foreach ($articleGroups as $group) {
+                    if (!isset($group['matrix'])) continue;
                     foreach ($group['matrix'] as $row) {
                         foreach ($row as $k => $val) {
-                            if (str_starts_with($k, 'qty_')) {
+                            // SOLO guardamos si la cantidad es mayor a 0
+                            if (str_starts_with($k, 'qty_') && (int)$val > 0) { 
                                 $sizeId = str_replace('qty_', '', $k);
                                 $sku = Sku::where('article_id', $group['article_id'])->where('color_id', $row['color_id'])->where('size_id', $sizeId)->first();
+                                
                                 if ($sku) {
+                                    $sub = (int)$val * $sku->article->base_cost;
                                     $record->items()->updateOrCreate(['sku_id' => $sku->id], [
                                         'article_id' => $group['article_id'], 'color_id' => $row['color_id'],
-                                        'quantity' => (int)($val ?? 0), 'unit_price' => $sku->article->base_cost,
-                                        'subtotal' => (int)($val ?? 0) * $sku->article->base_cost
+                                        'quantity' => (int)$val, 'unit_price' => $sku->article->base_cost,
+                                        'subtotal' => $sub
                                     ]);
+                                    $totalAmount += $sub;
+                                    $skusToKeep[] = $sku->id; // Este item sobrevive
                                 }
                             }
                         }
                     }
                 }
+                
+                // Borramos los items que el usuario puso en 0 o eliminó de la matriz
+                if (!empty($skusToKeep)) {
+                    $record->items()->whereNotIn('sku_id', $skusToKeep)->delete();
+                } else {
+                    $record->items()->delete(); // Si borró todo, vaciamos el pedido
+                }
+                
+                // Actualizamos el total del dinero
+                $record->update(['total_amount' => $totalAmount]);
             }
 
             // CREAR HIJO (Tuyo original)
