@@ -5,6 +5,7 @@
     <style>
         body { font-family: 'Helvetica', sans-serif; font-size: 11px; color: #111; }
         .invoice-box { border: 1px solid #000; padding: 10px; }
+        /* CAMBIO: Si es NC, podemos poner un color distinto o dejarlo igual */
         .type-box { position: absolute; left: 47%; top: 0; width: 45px; height: 40px; border: 1px solid #000; background: #fff; text-align: center; font-size: 30px; font-weight: bold; z-index: 10; }
         .header { width: 100%; border-bottom: 1px solid #000; margin-bottom: 10px; }
         .col { width: 50%; vertical-align: top; }
@@ -17,18 +18,20 @@
 </head>
 <body>
     <div class="invoice-box">
+        {{-- CAMBIO: El recuadro siempre dice B (porque es NC de una B), pero el título cambia --}}
         <div class="type-box">B</div>
         
         <table class="header">
             <tr>
                 <td class="col">
                     <h1 style="margin:0; color: #000;">EL MENSUAL</h1>
-                    <p><strong>Razón Social:</strong> FERMIN FABRICA S.R.L.<br>
+                    <p><strong>Razón Social:</strong> LAMOTEX.<br>
                     <strong>Domicilio:</strong> Saladillo, Buenos Aires<br>
                     <strong>Condición IVA:</strong> Responsable Inscripto</p>
                 </td>
                 <td class="col" style="text-align: right; border-left: 1px solid #000; padding-left: 15px;">
-                    <h2 style="margin:0;">FACTURA</h2>
+                    {{-- CAMBIO: Título dinámico según el tipo --}}
+                    <h2 style="margin:0;">{{ $invoice->invoice_type === 'NC' ? 'NOTA DE CRÉDITO' : 'FACTURA' }}</h2>
                     <p><strong>Nro:</strong> {{ $invoice->number }}<br>
                     <strong>Fecha:</strong> {{ $invoice->created_at->format('d/m/Y') }}<br>
                     <strong>CUIT:</strong> 30633784104<br>
@@ -66,8 +69,8 @@
         </table>
 
         <div class="total-row">
-            {{-- ACA EL FIX: Usamos el total_fiscal que guardamos en la tabla invoice --}}
-            TOTAL FINAL: $ {{ number_format($invoice->total_fiscal, 2, ',', '.') }}
+            {{-- CAMBIO: Usamos abs() para que el total en el PDF salga positivo (en la DB es negativo) --}}
+            TOTAL {{ $invoice->invoice_type === 'NC' ? 'CRÉDITO' : 'FINAL' }}: $ {{ number_format(abs($invoice->total_fiscal), 2, ',', '.') }}
         </div>
 
         <div class="cae-data">

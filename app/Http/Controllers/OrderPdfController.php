@@ -24,25 +24,27 @@ class OrderPdfController extends Controller
     /**
      * Descarga la Factura oficial (con CAE)
      */
-    public function downloadInvoice(Order $order)
+    public function downloadInvoice(Order $order, Request $request)
     {
-        // Cargamos la relación invoice y los datos del cliente
-        $order->load(['invoice', 'client', 'items.article']);
+        $type = $request->query('type', 'B'); // Por defecto B
 
-        // Verificamos que realmente tenga factura
-        if (!$order->invoice) {
-            abort(404, 'Este pedido no tiene una factura generada.');
+        $invoice = $order->invoices()
+            ->where('invoice_type', $type)
+            ->latest()
+            ->first();
+
+        if (!$invoice) {
+            abort(404, "Comprobante no encontrado.");
         }
 
-        // Usamos la vista específica para facturas
+        $order->load(['client', 'items.article', 'items.sku.color', 'items.sku.size']);
+
         $pdf = Pdf::loadView('pdf.invoice', [
-            'order' => $order,
-            'invoice' => $order->invoice
+            'order' => $order, 
+            'invoice' => $invoice,
+            'isNC' => ($type === 'NC') // Helper para la vista
         ]);
 
-        // Nombre de archivo profesional
-        $filename = "factura-{$order->id}.pdf";
-
-        return $pdf->stream($filename);
+        return $pdf->stream("{$type}-{$invoice->number}.pdf");
     }
 }

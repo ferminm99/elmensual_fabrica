@@ -83,7 +83,7 @@ class OrderResource extends Resource
 
                                     if (in_array($value, ['checked', 'dispatched', 'paid'])) {
                                         // Usamos total_fiscal para validar
-                                        if (!$record->invoice()->where('total_fiscal', '>', 0)->exists() && $value !== $dbStatus) {
+                                        if (!$record->invoices()->where('invoice_type', 'B')->exists() && $value !== $dbStatus) {
                                             return true;
                                         }
                                     }
@@ -260,25 +260,38 @@ class OrderResource extends Resource
                     ->label('Ver Factura')
                     ->icon('heroicon-o-document-text')
                     ->color('gray')
-                    ->visible(fn (Order $record) => $record->invoice()->where('total_fiscal', '>', 0)->exists())
-                    ->url(fn (Order $record) => route('order.invoice.download', $record->id))
+                    // CAMBIO: Usamos invoices() en plural y filtramos por tipo 'B'
+                    ->visible(fn (Order $record) => $record->invoices()->where('invoice_type', 'B')->exists())
+                    ->url(fn (Order $record) => route('order.invoice.download', ['order' => $record->id, 'type' => 'B']))
+                    ->openUrlInNewTab(),
+                
+                // BOTÓN: VER NOTA DE CRÉDITO
+                Tables\Actions\Action::make('descargar_nc')
+                    ->label('Ver Nota Crédito')
+                    ->icon('heroicon-o-document-minus')
+                    ->color('danger')
+                    // CAMBIO: Usamos el helper isAnnulled() que definimos en el modelo Order
+                    ->visible(fn (Order $record) => $record->isAnnulled())
+                    ->url(fn (Order $record) => route('order.invoice.download', ['order' => $record->id, 'type' => 'NC']))
                     ->openUrlInNewTab(),
 
+                // BOTÓN: FACTURAR (Generar Factura B)
                 Tables\Actions\Action::make('facturar')
                     ->label('Facturar')
                     ->icon('heroicon-o-document-check')
                     ->color('success')
                     ->modalWidth('5xl')
-                    ->visible(fn (Order $record) => in_array($record->status->value, ['assembled', 'standby']) && !$record->invoice()->where('total_fiscal', '>', 0)->exists())
+                    // CAMBIO: Solo visible si NO tiene una factura B ya generada
+                    ->visible(fn (Order $record) => 
+                        in_array($record->status->value, ['assembled', 'standby']) && 
+                        !$record->invoices()->where('invoice_type', 'B')->exists()
+                    )
                     ->form(function (Order $record) {
                         $itemsAgrupados = $record->items()
                             ->select('article_id', DB::raw('SUM(packed_quantity) as total_qty'), DB::raw('AVG(unit_price) as price'))
                             ->groupBy('article_id')->having('total_qty', '>', 0)->get();
-
                         $totalCostoPedido = $itemsAgrupados->sum(fn($i) => $i->total_qty * $i->price);
-                        
                         $resumenHtml = "<div class='p-4 border rounded'><strong>Total a Facturar:</strong> $".number_format($totalCostoPedido, 2)."</div>";
-
                         return [
                             Forms\Components\Placeholder::make('resumen_carga')
                                 ->label('Detalle')
@@ -328,11 +341,16 @@ class OrderResource extends Resource
                     })
                     ->requiresConfirmation(),
 
+                // BOTÓN: ANULAR (Generar NC)
                 Tables\Actions\Action::make('anular_factura')
                     ->label('Anular (NC)')
                     ->icon('heroicon-o-x-circle')
                     ->color('danger')
-                    ->visible(fn (Order $record) => $record->invoice()->where('total_fiscal', '>', 0)->exists())
+                    // CAMBIO: Solo si tiene Factura B y TODAVÍA NO tiene Nota de Crédito
+                    ->visible(fn (Order $record) => 
+                        $record->invoices()->where('invoice_type', 'B')->exists() && 
+                        !$record->isAnnulled()
+                    )
                     ->requiresConfirmation()
                     ->modalHeading('¿Anular Factura en AFIP?')
                     ->modalSubmitActionLabel('Sí, Generar Nota de Crédito')

@@ -169,25 +169,26 @@ class AfipService
             $res = $wsfe->FECAESolicitar($req);
 
             if ($res->FECAESolicitarResult->FeCabResp->Resultado == 'A') {
-                // --- FIX ACCESO SEGURO Y NOMBRE DE CAMPO (CAEFchVto) ---
                 $detResponse = $res->FECAESolicitarResult->FeDetResp->FECAEDetResponse;
                 $item = is_array($detResponse) ? $detResponse[0] : $detResponse;
-                
                 $cae = $item->CAE;
-                $vto = $item->CAEFchVto; // AFIP devuelve CAEFchVto, no CAEProxVto
+                $vto = $item->CAEFchVto;
 
                 DB::transaction(function () use ($record, $cae, $total, $next, $vto) {
-                    $record->invoice()->create([
+                    // CAMBIO: invoices() en plural
+                    $record->invoices()->create([
                         'invoice_type' => 'B',
                         'total_fiscal' => $total,
                         'cae_afip'     => $cae,
                         'cae_expiry'   => \Illuminate\Support\Carbon::createFromFormat('Ymd', $vto)->format('Y-m-d'),
                         'number'       => str_pad(self::$PV, 5, '0', STR_PAD_LEFT) . '-' . str_pad($next, 8, '0', STR_PAD_LEFT),
                     ]);
+
+                    // COBRO EN CUENTA CORRIENTE
+                    $record->client->increment('fiscal_debt', $total);
                     $record->update(['status' => OrderStatus::Checked]);
                 });
-
-                return ['success' => true, 'message' => "Factura B aprobada (CAE: $cae)"];
+                return ['success' => true, 'message' => "Factura B aprobada"];
             } else {
                 $err = $res->FECAESolicitarResult->Errors->Err->Msg 
                        ?? $res->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones->Obs->Msg 
@@ -206,7 +207,7 @@ class AfipService
     {
         try {
             self::init();
-            $facturaOriginal = $order->invoice()->where('invoice_type', 'B')->latest()->first();
+            $facturaOriginal = $order->invoices()->where('invoice_type', 'B')->latest()->first();            
             
             if (!$facturaOriginal || empty($facturaOriginal->number)) {
                 return ['success' => false, 'error' => "Falta el número de factura original en la BD."];
@@ -258,7 +259,8 @@ class AfipService
                 $vto = $item->CAEFchVto;
 
                 DB::transaction(function () use ($order, $cae, $total, $nextNC, $vto, $facturaOriginal) {
-                    $order->invoice()->create([
+                    // CAMBIO: invoices() en plural
+                    $order->invoices()->create([
                         'invoice_type' => 'NC',
                         'total_fiscal' => -$total, 
                         'cae_afip'     => $cae,
@@ -266,8 +268,12 @@ class AfipService
                         'number'       => str_pad(self::$PV, 5, '0', STR_PAD_LEFT) . '-' . str_pad($nextNC, 8, '0', STR_PAD_LEFT),
                         'parent_id'    => $facturaOriginal->id
                     ]);
+
+                    // RESTAR DE CUENTA CORRIENTE
+                    $order->client->decrement('fiscal_debt', $total);
+                    $order->update(['status' => OrderStatus::Assembled]);
                 });
-                return ['success' => true, 'message' => "Nota de Crédito generada (CAE: $cae)"];
+                return ['success' => true, 'message' => "Anulación aprobada"];
             } else {
                 $err = $res->FECAESolicitarResult->Errors->Err->Msg ?? 'Error AFIP';
                 return ['success' => false, 'error' => "Rechazo AFIP: " . $err];

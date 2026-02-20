@@ -57,10 +57,15 @@ class Order extends Model
         return $this->hasMany(OrderItem::class);
     }
 
-     public function invoice(): HasOne
+    public function invoices(): HasMany // Cambiamos HasOne por HasMany
     {
-        return $this->hasOne(Invoice::class);
+        return $this->hasMany(Invoice::class);
     }
+
+    public function isAnnulled(): bool
+{
+    return $this->invoices()->where('invoice_type', 'NC')->exists();
+}
     
     // RELACIONES RECURSIVAS (Padre e Hijos)
     // Esto es lo que permite la lógica de "Desglose" cuando editamos un pedido armado
@@ -104,5 +109,7 @@ class Order extends Model
     {
         return $this->items->sum(fn($item) => $item->quantity * $item->unit_price);
     }
+
+    
 
 }
