@@ -22,7 +22,6 @@
         .st-extra:focus { background-color: #fff; border-color: #3b82f6; }
     </style>
 
-    {{-- AGREGADO: wire:poll para mantener vivo el bloqueo cada 60 segundos si hay un pedido activo --}}
     <div class="min-h-screen pb-12" @if($activeOrderId) wire:poll.60s="keepAlive" @endif>
         @if(!$this->activeOrder)
             {{-- LISTA DE PENDIENTES --}}
@@ -91,7 +90,7 @@
 
             {{-- LISTA DE PREPARADOS --}}
             @if($this->ordersReady->count() > 0)
-                <div>
+                <div class="mb-12">
                     <div class="flex items-center gap-3 mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
                         <span class="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-500"><x-heroicon-m-check-badge class="h-5 w-5" /></span>
                         <h2 class="text-xl font-bold text-gray-800 dark:text-white">PREPARADOS / LISTOS</h2>
@@ -110,6 +109,40 @@
                                 <div class="mt-2 text-xs text-gray-500">
                                     {{ $order->client->locality->name ?? '-' }} 
                                     @if($order->client->locality?->zone) - {{ $order->client->locality->zone->name }} @endif
+                                </div>
+                            </div>
+                        @endforeach
+                    </div>
+                </div>
+            @endif
+
+            {{-- NUEVA SECCIÓN: LISTA DE CANCELADOS A DESARMAR --}}
+            @if($this->ordersToDisassemble->count() > 0)
+                <div class="mb-12">
+                    <div class="flex items-center gap-3 mb-4 border-b border-red-200 dark:border-red-900/50 pb-2">
+                        <span class="flex h-8 w-8 items-center justify-center rounded-full bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-500">
+                            <x-heroicon-m-archive-box-x-mark class="h-5 w-5 animate-pulse" />
+                        </span>
+                        <h2 class="text-xl font-black text-red-700 dark:text-red-400 uppercase">PARA DESARMAR (CANCELADOS)</h2>
+                        <span class="rounded-full bg-red-100 dark:bg-red-900 px-2.5 py-0.5 text-xs font-bold text-red-800 dark:text-red-300">{{ $this->ordersToDisassemble->count() }}</span>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        @foreach($this->ordersToDisassemble as $order)
+                            @php
+                                $totalToReturn = $order->items->sum('packed_quantity');
+                            @endphp
+                            <div class="relative overflow-hidden rounded-xl bg-red-50 dark:bg-red-950/20 p-4 shadow-sm ring-2 ring-red-400 dark:ring-red-900">
+                                <div class="flex justify-between items-start mb-2">
+                                    <div>
+                                        <h3 class="text-xl font-black text-red-900 dark:text-red-400">#{{ $order->id }} <span class="text-sm font-normal">({{ $order->client->name }})</span></h3>
+                                        <p class="font-bold text-red-700 dark:text-red-300 mt-1">Devolver al estante: {{ $totalToReturn }} prendas</p>
+                                    </div>
+                                    <span class="bg-red-600 text-white text-[10px] font-black px-2 py-1 rounded uppercase flex items-center gap-1"><x-heroicon-m-x-circle class="w-3 h-3"/> ANULADO</span>
+                                </div>
+                                <div class="mt-4 flex justify-end">
+                                    <x-filament::button wire:click="markAsDisassembled({{ $order->id }})" color="danger" size="sm" icon="heroicon-m-check">
+                                        Confirmar Caja Vaciada
+                                    </x-filament::button>
                                 </div>
                             </div>
                         @endforeach

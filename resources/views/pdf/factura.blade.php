@@ -5,7 +5,6 @@
     <style>
         body { font-family: 'Helvetica', sans-serif; font-size: 11px; color: #111; }
         .invoice-box { border: 1px solid #000; padding: 10px; }
-        /* CAMBIO: Si es NC, podemos poner un color distinto o dejarlo igual */
         .type-box { position: absolute; left: 47%; top: 0; width: 45px; height: 40px; border: 1px solid #000; background: #fff; text-align: center; font-size: 30px; font-weight: bold; z-index: 10; }
         .header { width: 100%; border-bottom: 1px solid #000; margin-bottom: 10px; }
         .col { width: 50%; vertical-align: top; }
@@ -18,7 +17,6 @@
 </head>
 <body>
     <div class="invoice-box">
-        {{-- CAMBIO: El recuadro siempre dice B (porque es NC de una B), pero el título cambia --}}
         <div class="type-box">B</div>
         
         <table class="header">
@@ -30,7 +28,6 @@
                     <strong>Condición IVA:</strong> Responsable Inscripto</p>
                 </td>
                 <td class="col" style="text-align: right; border-left: 1px solid #000; padding-left: 15px;">
-                    {{-- CAMBIO: Título dinámico según el tipo --}}
                     <h2 style="margin:0;">{{ $invoice->invoice_type === 'NC' ? 'NOTA DE CRÉDITO' : 'FACTURA' }}</h2>
                     <p><strong>Nro:</strong> {{ $invoice->number }}<br>
                     <strong>Fecha:</strong> {{ $invoice->created_at->format('d/m/Y') }}<br>
@@ -57,19 +54,52 @@
                 </tr>
             </thead>
             <tbody>
-                @foreach($order->items as $item)
-                <tr>
-                    <td>{{ $item->article->name }} ({{ $item->sku->color->name ?? '' }} - {{ $item->sku->size->name ?? '' }})</td>
-                    <td style="text-align:center;">{{ $item->packed_quantity }}</td>
-                    <td style="text-align:right;">$ {{ number_format($item->unit_price, 2, ',', '.') }}</td>
-                    <td style="text-align:right;">$ {{ number_format($item->packed_quantity * $item->unit_price, 2, ',', '.') }}</td>
-                </tr>
+                @php
+                    // MAGIA: Obtenemos items del padre y de todos sus hijos
+                    $orderIds = \App\Models\Order::where('id', $order->id)->orWhere('parent_id', $order->id)->pluck('id')->toArray();
+                    $itemsAgrupados = \App\Models\OrderItem::with(['article', 'sku.color', 'sku.size'])
+                                        ->whereIn('order_id', $orderIds)
+                                        ->get();
+                                        
+                    // Agrupamos por SKU para mostrar cada talle/color por separado en la factura
+                    $groupedBySku = $itemsAgrupados->groupBy('sku_id');
+                @endphp
+
+                @foreach($groupedBySku as $skuId => $items)
+                    @php
+                        // Obtenemos el primer item de este grupo para sacar los datos del artículo
+                        $firstItem = $items->first();
+                        
+                        // Sumamos la cantidad armada (si es 0, usamos la pedida original)
+                        $qty = $items->sum(function($i) {
+                            return $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity;
+                        });
+                        
+                        // Si es factura mixta (50%), dividimos la cantidad impresa por la mitad
+                        // Solo para el PDF de la factura fiscal
+                        if ($order->billing_type === 'mixed') {
+                            $qty = max(1, floor($qty / 2)); // max(1) evita que salgan ceros si pidió 1 sola unidad
+                        }
+
+                        $price = $items->max('unit_price');
+                        $subtotal = $qty * $price;
+                        
+                        if ($qty <= 0) continue;
+                    @endphp
+                    <tr>
+                        <td>
+                            {{ $firstItem->article->name }} 
+                            ({{ $firstItem->sku->color->name ?? '' }} - {{ $firstItem->sku->size->name ?? '' }})
+                        </td>
+                        <td style="text-align:center;">{{ $qty }}</td>
+                        <td style="text-align:right;">$ {{ number_format($price, 2, ',', '.') }}</td>
+                        <td style="text-align:right;">$ {{ number_format($subtotal, 2, ',', '.') }}</td>
+                    </tr>
                 @endforeach
             </tbody>
         </table>
 
         <div class="total-row">
-            {{-- CAMBIO: Usamos abs() para que el total en el PDF salga positivo (en la DB es negativo) --}}
             TOTAL {{ $invoice->invoice_type === 'NC' ? 'CRÉDITO' : 'FINAL' }}: $ {{ number_format(abs($invoice->total_fiscal), 2, ',', '.') }}
         </div>
 

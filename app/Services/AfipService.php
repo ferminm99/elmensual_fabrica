@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Order;
+use App\Models\OrderItem;
 use App\Enums\OrderStatus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -107,7 +108,7 @@ class AfipService
         }
     }
 
-   /**
+    /**
      * Método principal para Facturar
      */
     public static function facturar(Order $record, array $data)
@@ -124,10 +125,22 @@ class AfipService
             ]);
             $next = $ultimo->FECompUltimoAutorizadoResult->CbteNro + 1;
 
-            // --- Lógica de totales original del usuario ---
-            $total = round($record->total_amount, 2);
-            if ($total <= 0) {
-                $total = round($record->items->sum(fn($i) => $i->packed_quantity * $i->unit_price), 2);
+            // --- LÓGICA DE TOTAL CONSOLIDADO (PADRE E HIJOS) ---
+            $orderIds = Order::where('id', $record->id)->orWhere('parent_id', $record->id)->pluck('id')->toArray();
+            
+            $itemsAgrupados = OrderItem::whereIn('order_id', $orderIds)->get();
+            
+            $totalCostoPedido = 0;
+            foreach ($itemsAgrupados as $item) {
+                $qty = $item->packed_quantity > 0 ? $item->packed_quantity : $item->quantity;
+                $totalCostoPedido += ($qty * $item->unit_price);
+            }
+
+            $total = round($totalCostoPedido, 2);
+
+            // Si es mixto, le mandamos a AFIP solo la mitad del dinero
+            if (isset($data['billing_type']) && $data['billing_type'] === 'mixed') {
+                $total = round($total / 2, 2);
             }
 
             if ($total <= 0) throw new Exception("El pedido no tiene un monto válido para facturar.");
@@ -175,7 +188,6 @@ class AfipService
                 $vto = $item->CAEFchVto;
 
                 DB::transaction(function () use ($record, $cae, $total, $next, $vto) {
-                    // CAMBIO: invoices() en plural
                     $record->invoices()->create([
                         'invoice_type' => 'B',
                         'total_fiscal' => $total,
@@ -191,8 +203,8 @@ class AfipService
                 return ['success' => true, 'message' => "Factura B aprobada"];
             } else {
                 $err = $res->FECAESolicitarResult->Errors->Err->Msg 
-                       ?? $res->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones->Obs->Msg 
-                       ?? 'Error desconocido';
+                        ?? $res->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones->Obs->Msg 
+                        ?? 'Error desconocido';
                 return ['success' => false, 'error' => "Rechazo AFIP: " . $err];
             }
         } catch (Exception $e) {
@@ -222,6 +234,7 @@ class AfipService
             $ultimo = $wsfe->FECompUltimoAutorizado(['Auth' => $auth, 'PtoVta' => self::$PV, 'CbteTipo' => $tipo_nc]);
             $nextNC = $ultimo->FECompUltimoAutorizadoResult->CbteNro + 1;
 
+            // La NC siempre se hace por el total exacto que se facturó originalmente
             $total = abs($facturaOriginal->total_fiscal);
             $neto  = round($total / 1.21, 2);
             $iva   = round($total - $neto, 2);
@@ -259,7 +272,6 @@ class AfipService
                 $vto = $item->CAEFchVto;
 
                 DB::transaction(function () use ($order, $cae, $total, $nextNC, $vto, $facturaOriginal) {
-                    // CAMBIO: invoices() en plural
                     $order->invoices()->create([
                         'invoice_type' => 'NC',
                         'total_fiscal' => -$total, 
@@ -271,7 +283,7 @@ class AfipService
 
                     // RESTAR DE CUENTA CORRIENTE
                     $order->client->decrement('fiscal_debt', $total);
-                    $order->update(['status' => OrderStatus::Assembled]);
+                    // El status update lo manejamos desde el Modal de Filament ahora
                 });
                 return ['success' => true, 'message' => "Anulación aprobada"];
             } else {

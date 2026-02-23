@@ -60,7 +60,7 @@ class OrderResource extends Resource
                            
                             Forms\Components\Select::make('status')
                                 ->options(OrderStatus::class)
-                                ->default(OrderStatus::Draft) // IMPORTANTE: Arranca en Borrador
+                                ->default(OrderStatus::Draft)
                                 ->live()
                                 ->required()
                                 ->disableOptionWhen(function ($value, ?Order $record, Get $get) {
@@ -82,7 +82,6 @@ class OrderResource extends Resource
                                     }
 
                                     if (in_array($value, ['checked', 'dispatched', 'paid'])) {
-                                        // Usamos total_fiscal para validar
                                         if (!$record->invoices()->where('invoice_type', 'B')->exists() && $value !== $dbStatus) {
                                             return true;
                                         }
@@ -237,103 +236,215 @@ class OrderResource extends Resource
                             ->options(fn (Get $get) => Locality::whereIn('zone_id', $get('zone_ids') ?? [])->pluck('name', 'id'))->columns(3)->required()->bulkToggleable(),
                     ])
                     ->action(function (array $data) {
-                        $count = Order::where('status', OrderStatus::Draft)->whereHas('client', fn($q) => $q->whereIn('locality_id', $data['locality_ids']))->update(['status' => OrderStatus::Processing]);
-                        Notification::make()->title("Lanzamiento: {$count} pedidos enviados a armado.")->success()->send();
+                        $parentOrders = Order::where('status', OrderStatus::Draft)
+                            ->whereNull('parent_id')
+                            ->whereHas('client', fn($q) => $q->whereIn('locality_id', $data['locality_ids']))
+                            ->get();
+
+                        $count = 0;
+                        foreach ($parentOrders as $order) {
+                            $order->update(['status' => OrderStatus::Processing]);
+                            $order->children()->update(['status' => OrderStatus::Processing]); 
+                            $count++;
+                        }
+
+                        Notification::make()->title("Lanzamiento: {$count} pedidos principales (y sus derivados) enviados a armado.")->success()->send();
                     }),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\BulkAction::make('changeStatus')
-                        ->label('Cambiar Estado')
-                        ->icon('heroicon-o-arrow-path')
-                        ->form([
-                            Forms\Components\Select::make('status')
-                                ->options(OrderStatus::class)->required(),
-                        ])
-                        ->action(fn (Collection $records, array $data) => $records->each->update(['status' => $data['status']])),
+                    Tables\Actions\DeleteBulkAction::make()
+                        ->before(function (Collection $records, Tables\Actions\DeleteBulkAction $action) {
+                            $hasInvalidOrders = $records->contains(function (Order $order) {
+                                $status = $order->status instanceof \BackedEnum ? $order->status->value : $order->status;
+                                return $status !== 'draft';
+                            });
+
+                            if ($hasInvalidOrders) {
+                                Notification::make()
+                                    ->danger()
+                                    ->title('Acción Bloqueada')
+                                    ->body('Solo puedes eliminar pedidos en estado "Borrador". Los demás deben ser cancelados.')
+                                    ->persistent()
+                                    ->send();
+                                $action->halt(); 
+                            }
+
+                            foreach ($records as $record) {
+                                $record->children()->delete();
+                            }
+                        }),
                 ]),
             ])
             ->actions([
-                Tables\Actions\EditAction::make(),
+                // EDITAR (Solo Padres y en estados permitidos)
+                Tables\Actions\EditAction::make()
+                    ->visible(function (Order $record) {
+                        $status = $record->status instanceof \BackedEnum ? $record->status->value : $record->status;
+                        $isEditable = !in_array($status, ['dispatched', 'paid', 'cancelled']);
+                        return $isEditable && is_null($record->parent_id);
+                    }),
 
-                Tables\Actions\Action::make('descargar_factura')
-                    ->label('Ver Factura')
-                    ->icon('heroicon-o-document-text')
-                    ->color('gray')
-                    // CAMBIO: Usamos invoices() en plural y filtramos por tipo 'B'
-                    ->visible(fn (Order $record) => $record->invoices()->where('invoice_type', 'B')->exists())
-                    ->url(fn (Order $record) => route('order.invoice.download', ['order' => $record->id, 'type' => 'B']))
-                    ->openUrlInNewTab(),
-                
-                // BOTÓN: VER NOTA DE CRÉDITO
-                Tables\Actions\Action::make('descargar_nc')
-                    ->label('Ver Nota Crédito')
-                    ->icon('heroicon-o-document-minus')
-                    ->color('danger')
-                    // CAMBIO: Usamos el helper isAnnulled() que definimos en el modelo Order
-                    ->visible(fn (Order $record) => $record->isAnnulled())
-                    ->url(fn (Order $record) => route('order.invoice.download', ['order' => $record->id, 'type' => 'NC']))
-                    ->openUrlInNewTab(),
+                // ==========================================
+                // BOTONES DIRECTOS (FLUJO PRINCIPAL)
+                // ==========================================
 
-                // BOTÓN: FACTURAR (Generar Factura B)
+                // DRAFT -> PROCESSING (A Armar)
+                Tables\Actions\Action::make('enviar_a_armar')
+                    ->label('A Armar')
+                    ->icon('heroicon-m-inbox-arrow-down')
+                    ->color('warning')
+                    ->button()
+                    ->visible(fn (Order $record) => ($record->status instanceof \BackedEnum ? $record->status->value : $record->status) === 'draft' && is_null($record->parent_id))
+                    ->requiresConfirmation()
+                    ->action(function (Order $record) {
+                        $record->update(['status' => OrderStatus::Processing]);
+                        $record->children()->update(['status' => OrderStatus::Processing]);
+                    }),
+
+                // ASSEMBLED / STANDBY -> CHECKED (FACTURAR)
                 Tables\Actions\Action::make('facturar')
                     ->label('Facturar')
                     ->icon('heroicon-o-document-check')
                     ->color('success')
-                    ->modalWidth('5xl')
-                    // CAMBIO: Solo visible si NO tiene una factura B ya generada
+                    ->button()
+                    ->modalWidth('7xl')
                     ->visible(fn (Order $record) => 
-                        in_array($record->status->value, ['assembled', 'standby']) && 
-                        !$record->invoices()->where('invoice_type', 'B')->exists()
+                        in_array($record->status instanceof \BackedEnum ? $record->status->value : $record->status, ['assembled', 'standby']) && 
+                        !$record->invoices()->where('invoice_type', 'B')->exists() &&
+                        is_null($record->parent_id)
                     )
                     ->form(function (Order $record) {
-                        $itemsAgrupados = $record->items()
-                            ->select('article_id', DB::raw('SUM(packed_quantity) as total_qty'), DB::raw('AVG(unit_price) as price'))
-                            ->groupBy('article_id')->having('total_qty', '>', 0)->get();
-                        $totalCostoPedido = $itemsAgrupados->sum(fn($i) => $i->total_qty * $i->price);
-                        $resumenHtml = "<div class='p-4 border rounded'><strong>Total a Facturar:</strong> $".number_format($totalCostoPedido, 2)."</div>";
+                        // FIX DEFINITIVO: Traemos el Padre y TODOS los hijos
+                        $orderIds = \App\Models\Order::where('id', $record->id)
+                            ->orWhere('parent_id', $record->id)
+                            ->pluck('id')
+                            ->toArray();
+                            
+                        $itemsAgrupados = \App\Models\OrderItem::with('article')
+                            ->whereIn('order_id', $orderIds)
+                            ->get();
+                            
+                        $grouped = $itemsAgrupados->groupBy('article_id');
+                        $tbody = '';
+                        $totalCostoPedido = 0;
+
+                        foreach ($grouped as $articleId => $items) {
+                            $qty = $items->sum(function($i) {
+                                return $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity;
+                            });
+                            
+                            if ($qty <= 0) continue;
+                            
+                            $price = $items->max('unit_price');
+                            $subtotal = $qty * $price;
+                            $totalCostoPedido += $subtotal;
+                            
+                            $article = $items->first()->article;
+                            $codigo = $article ? $article->code : 'S/C';
+                            $nombre = $article ? $article->name : 'Artículo Eliminado';
+                            
+                            $tbody .= "
+                                <tr class='border-b border-gray-200 dark:border-white/10'>
+                                    <td class='px-4 py-3 text-sm text-gray-950 dark:text-white'>{$codigo} - {$nombre}</td>
+                                    <td class='px-4 py-3 text-sm text-center font-medium text-gray-950 dark:text-white'>{$qty}</td>
+                                    <td class='px-4 py-3 text-sm text-right text-gray-950 dark:text-white'>$ " . number_format($price, 2, ',', '.') . "</td>
+                                    <td class='px-4 py-3 text-sm font-bold text-right text-gray-950 dark:text-white'>$ " . number_format($subtotal, 2, ',', '.') . "</td>
+                                </tr>
+                            ";
+                        }
+
+                        $resumenHtml = "
+                        <div class='fi-ta-content overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10 mb-2'>
+                            <div class='overflow-x-auto'>
+                                <table class='w-full text-left divide-y divide-gray-200 dark:divide-white/5'>
+                                    <thead class='bg-gray-50 dark:bg-white/5'>
+                                        <tr>
+                                            <th class='px-4 py-3 text-xs font-semibold text-gray-950 dark:text-white uppercase tracking-wider'>Artículo</th>
+                                            <th class='px-4 py-3 text-xs font-semibold text-center text-gray-950 dark:text-white uppercase tracking-wider'>Cant.</th>
+                                            <th class='px-4 py-3 text-xs font-semibold text-right text-gray-950 dark:text-white uppercase tracking-wider'>Precio U.</th>
+                                            <th class='px-4 py-3 text-xs font-semibold text-right text-gray-950 dark:text-white uppercase tracking-wider'>Subtotal</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class='divide-y divide-gray-200 dark:divide-white/5'>
+                                        {$tbody}
+                                    </tbody>
+                                    <tfoot class='bg-gray-50 dark:bg-white/5'>
+                                        <tr>
+                                            <td colspan='3' class='px-4 py-4 text-right text-sm font-bold text-gray-950 dark:text-white uppercase tracking-wider'>
+                                                Total Consolidado (Padre e Hijos):
+                                            </td>
+                                            <td class='px-4 py-4 text-right text-xl font-black text-primary-600 dark:text-primary-400'>
+                                                $ " . number_format($totalCostoPedido, 2, ',', '.') . "
+                                            </td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                        </div>
+                        ";
+                        
                         return [
                             Forms\Components\Placeholder::make('resumen_carga')
-                                ->label('Detalle')
+                                ->label('')
                                 ->content(new HtmlString($resumenHtml)),
 
-                            Forms\Components\Section::make('Configuración')->schema([
+                            Forms\Components\Section::make('Configuración de Cobro')->schema([
                                 Forms\Components\Grid::make(2)->schema([
                                     Forms\Components\Select::make('billing_type')
-                                        ->label('Tipo Facturación')
-                                        ->options(['fiscal' => 'Fiscal', 'informal' => 'Interno', 'mixed' => 'Mixto'])
+                                        ->label('Tipo de Facturación')
+                                        ->options(['fiscal' => 'Fiscal (100% Blanco)', 'informal' => 'Interno (100% Negro)', 'mixed' => 'Mixto (50/50)'])
                                         ->default($record->client->billing_type ?? 'mixed')
-                                        ->required()->live(),
-                                    Forms\Components\Placeholder::make('info_afip')->content('Conexión AFIP'),
-                                ]),
-                            ]),
-
-                            Forms\Components\Section::make('Información de Pago')->schema([
-                                Forms\Components\Grid::make(2)->schema([
+                                        ->required(),
+                                        
                                     Forms\Components\Select::make('payment_method')
+                                        ->label('Método de Pago')
                                         ->options(['cta_cte' => 'Cta Cte', 'efectivo' => 'Efectivo', 'transferencia' => 'Transferencia', 'cheque' => 'Cheque'])
                                         ->default($record->client->last_payment_method ?? 'cta_cte')
                                         ->required()->live(),
-                                    
+                                ]),
+                                
+                                Forms\Components\Grid::make(2)->schema([
                                     Forms\Components\TextInput::make('bank_name')->label('Banco Origen')->placeholder('Ej: Galicia / MP')
-                                        ->hidden(fn (Get $get) => $get('payment_method') !== 'transferencia')
+                                        ->visible(fn (Get $get) => in_array($get('payment_method'), ['transferencia', 'cheque']))
+                                        ->required(fn (Get $get) => in_array($get('payment_method'), ['transferencia', 'cheque'])),
+                                    Forms\Components\TextInput::make('transaction_id')->label('Nro. Referencia')
+                                        ->visible(fn (Get $get) => $get('payment_method') === 'transferencia')
                                         ->required(fn (Get $get) => $get('payment_method') === 'transferencia'),
-                                    Forms\Components\TextInput::make('transaction_id')->label('Ref.')
-                                        ->hidden(fn (Get $get) => $get('payment_method') !== 'transferencia')
-                                        ->required(fn (Get $get) => $get('payment_method') === 'transferencia'),
-                                    Forms\Components\TextInput::make('check_number')->label('Nro Cheque')
-                                        ->hidden(fn (Get $get) => $get('payment_method') !== 'cheque')
+                                    Forms\Components\TextInput::make('check_number')->label('Nro. Cheque')
+                                        ->visible(fn (Get $get) => $get('payment_method') === 'cheque')
                                         ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
-                                    Forms\Components\DatePicker::make('due_date')->label('Vencimiento')
-                                        ->hidden(fn (Get $get) => $get('payment_method') !== 'cheque')
+                                    Forms\Components\DatePicker::make('due_date')->label('Vencimiento Cheque')
+                                        ->visible(fn (Get $get) => $get('payment_method') === 'cheque')
                                         ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
                                 ]),
                             ]),
                         ];
                     })
                     ->action(function (Order $record, array $data) {
+                        // Guardamos el tipo de facturación final elegido en el Padre para usarlo luego en los PDFs
+                        $record->update(['billing_type' => $data['billing_type']]);
+                        
+                        // Si es informal, no llamamos a AFIP, solo cerramos el pedido
+                        if ($data['billing_type'] === 'informal') {
+                            $record->update([
+                                'status' => OrderStatus::Checked,
+                                'invoiced_at' => now(),
+                            ]);
+                            $record->children()->update(['status' => OrderStatus::Checked]);
+                            Notification::make()->success()->title("Pedido verificado internamente (100% Negro)")->send();
+                            return;
+                        }
+
+                        // Si es Fiscal o Mixto, llamamos a AFIP
                         $response = \App\Services\AfipService::facturar($record, $data);
                         if ($response['success']) {
+                            $record->update([
+                                'status' => OrderStatus::Checked,
+                                'invoice_number' => $data['invoice_number'] ?? null,
+                                'invoiced_at' => now(),
+                            ]);
+                            $record->children()->update(['status' => OrderStatus::Checked]);
                             Notification::make()->success()->title($response['message'])->send();
                         } else {
                             Notification::make()->danger()->title('Error AFIP')->body($response['error'])->persistent()->send();
@@ -341,27 +452,215 @@ class OrderResource extends Resource
                     })
                     ->requiresConfirmation(),
 
-                // BOTÓN: ANULAR (Generar NC)
-                Tables\Actions\Action::make('anular_factura')
-                    ->label('Anular (NC)')
-                    ->icon('heroicon-o-x-circle')
-                    ->color('danger')
-                    // CAMBIO: Solo si tiene Factura B y TODAVÍA NO tiene Nota de Crédito
-                    ->visible(fn (Order $record) => 
-                        $record->invoices()->where('invoice_type', 'B')->exists() && 
-                        !$record->isAnnulled()
-                    )
+                // CHECKED -> DISPATCHED (Despachar)
+                Tables\Actions\Action::make('despachar')
+                    ->label('Cargar en Viajante')
+                    ->icon('heroicon-m-truck')
+                    ->color('primary')
+                    ->button()
+                    ->visible(fn (Order $record) => ($record->status instanceof \BackedEnum ? $record->status->value : $record->status) === 'checked' && is_null($record->parent_id))
                     ->requiresConfirmation()
-                    ->modalHeading('¿Anular Factura en AFIP?')
-                    ->modalSubmitActionLabel('Sí, Generar Nota de Crédito')
                     ->action(function (Order $record) {
-                        $response = \App\Services\AfipService::anular($record);
-                        if ($response['success']) {
-                            Notification::make()->success()->title($response['message'])->send();
-                        } else {
-                            Notification::make()->danger()->title('Error al Anular')->body($response['error'])->persistent()->send();
-                        }
+                        $record->update(['status' => OrderStatus::Dispatched]);
+                        $record->children()->update(['status' => OrderStatus::Dispatched]);
                     }),
+
+                // DISPATCHED -> PAID (Cobrar)
+                Tables\Actions\Action::make('marcar_pagado')
+                    ->label('Marcar Pagado')
+                    ->icon('heroicon-m-currency-dollar')
+                    ->color('success')
+                    ->button()
+                    ->visible(fn (Order $record) => ($record->status instanceof \BackedEnum ? $record->status->value : $record->status) === 'dispatched' && is_null($record->parent_id))
+                    ->requiresConfirmation()
+                    ->action(function (Order $record) {
+                        $record->update(['status' => OrderStatus::Paid]);
+                        $record->children()->update(['status' => OrderStatus::Paid]);
+                    }),
+
+                // ==========================================
+                // EL NUEVO HUB DE IMPRESIÓN (FASE 6)
+                // ==========================================
+                Tables\Actions\ActionGroup::make([
+                    
+                    // 1. REMITOS (NO SALE EN INFORMAL)
+                    Tables\Actions\Action::make('print_remitos')
+                        ->label('Remitos (x3)')
+                        ->icon('heroicon-o-document-duplicate')
+                        ->color('gray')
+                        ->visible(fn (Order $record) => 
+                            $record->billing_type !== 'informal' && // REGLA: El 100% informal NO lleva remito
+                            in_array($record->status instanceof \BackedEnum ? $record->status->value : $record->status, ['checked', 'dispatched', 'paid']) && 
+                            is_null($record->parent_id)
+                        )
+                        ->url(fn (Order $record) => url('/admin/orders/'.$record->id.'/remito'))
+                        ->openUrlInNewTab(),
+
+                    // 2. FACTURA AFIP (Inteligente para múltiples facturas)
+                    Tables\Actions\Action::make('descargar_factura')
+                        ->label('Facturas AFIP')
+                        ->icon('heroicon-o-document-text')
+                        ->color('success')
+                        ->visible(fn (Order $record) => $record->invoices()->where('invoice_type', 'B')->exists() && is_null($record->parent_id))
+                        ->action(function (Order $record, array $data) {
+                            // Si solo hay una, redirigimos directo
+                            $invoices = $record->invoices()->where('invoice_type', 'B')->get();
+                            if ($invoices->count() === 1) {
+                                return redirect()->route('order.invoice.download', ['order' => $record->id, 'type' => 'B', 'invoice_id' => $invoices->first()->id]);
+                            }
+                        })
+                        // Si hay más de una, Filament muestra este form en un modal automáticamente
+                        ->form(function (Order $record) {
+                            $invoices = $record->invoices()->where('invoice_type', 'B')->get();
+                            if ($invoices->count() <= 1) return [];
+
+                            return [
+                                Forms\Components\Select::make('invoice_id')
+                                    ->label('Seleccione la factura que desea ver')
+                                    ->options($invoices->mapWithKeys(fn($i) => [$i->id => "Factura {$i->number} ({$i->created_at->format('d/m/Y H:i')})"]))
+                                    ->required(),
+                            ];
+                        })
+                        ->action(function (Order $record, array $data) {
+                            $invoiceId = $data['invoice_id'] ?? $record->invoices()->where('invoice_type', 'B')->first()->id;
+                            return redirect()->route('order.invoice.download', ['order' => $record->id, 'type' => 'B', 'invoice_id' => $invoiceId]);
+                        }),
+
+                    // 4. NOTA DE CRÉDITO (Inteligente para múltiples NC)
+                    Tables\Actions\Action::make('descargar_nc')
+                        ->label('Notas de Crédito')
+                        ->icon('heroicon-o-document-minus')
+                        ->color('danger')
+                        ->visible(fn (Order $record) => $record->invoices()->where('invoice_type', 'NC')->exists() && is_null($record->parent_id))
+                        ->form(function (Order $record) {
+                            $ncs = $record->invoices()->where('invoice_type', 'NC')->get();
+                            if ($ncs->count() <= 1) return [];
+
+                            return [
+                                Forms\Components\Select::make('invoice_id')
+                                    ->label('Seleccione la Nota de Crédito')
+                                    ->options($ncs->mapWithKeys(fn($nc) => [$nc->id => "NC {$nc->number} ({$nc->created_at->format('d/m/Y H:i')})"]))
+                                    ->required(),
+                            ];
+                        })
+                        ->action(function (Order $record, array $data) {
+                            $invoices = $record->invoices()->where('invoice_type', 'NC')->get();
+                            $invoiceId = $data['invoice_id'] ?? $invoices->first()->id;
+                            return redirect()->route('order.invoice.download', ['order' => $record->id, 'type' => 'NC', 'invoice_id' => $invoiceId]);
+                        }),
+
+                ])
+                ->label('🖨️ Documentos')
+                ->icon('heroicon-m-printer')
+                ->button()
+                ->color('gray')
+                ->visible(fn(Order $record) => is_null($record->parent_id) && in_array($record->status instanceof \BackedEnum ? $record->status->value : $record->status, ['checked', 'dispatched', 'paid'])),
+                
+                // ==========================================
+                // ACCIONES ADMINISTRATIVAS SECUNDARIAS
+                // ==========================================
+                Tables\Actions\ActionGroup::make([
+                    
+                    // PASAR A STANDBY
+                    Tables\Actions\Action::make('poner_en_standby')
+                        ->label('Pausar (Standby)')
+                        ->icon('heroicon-m-pause-circle')
+                        ->color('warning')
+                        ->visible(fn (Order $record) => 
+                            in_array($record->status instanceof \BackedEnum ? $record->status->value : $record->status, ['assembled', 'checked', 'dispatched']) 
+                            && is_null($record->parent_id)
+                        )
+                        ->requiresConfirmation()
+                        ->form([
+                            Forms\Components\Textarea::make('reason')->label('Motivo de la pausa')->required()
+                        ])
+                        ->action(function (Order $record, array $data) {
+                            $record->update(['status' => OrderStatus::Standby]);
+                            $record->children()->update(['status' => OrderStatus::Standby]);
+                            Notification::make()->warning()->title('Pedido en Standby')->send();
+                        }),
+
+                    // CANCELAR PEDIDO
+                    Tables\Actions\Action::make('cancelar_pedido')
+                        ->label('Cancelar Pedido')
+                        ->icon('heroicon-m-x-circle')
+                        ->color('danger')
+                        ->visible(function (Order $record) {
+                            if (!is_null($record->parent_id)) return false;
+                            $status = $record->status instanceof \BackedEnum ? $record->status->value : $record->status;
+                            $invalidStatuses = ['dispatched', 'paid', 'cancelled'];
+                            $hasValidInvoice = $record->invoices()->where('invoice_type', 'B')->exists() && !$record->isAnnulled();
+                            return !in_array($status, $invalidStatuses) && !$hasValidInvoice;
+                        })
+                        ->requiresConfirmation()
+                        ->form([
+                            Forms\Components\Textarea::make('reason')->label('Motivo de cancelación')->required()
+                        ])
+                        ->action(function (Order $record, array $data) {
+                            $record->update(['status' => OrderStatus::Cancelled]);
+                            $record->children()->update(['status' => OrderStatus::Cancelled]);
+                            Notification::make()->warning()->title('Pedido y derivados Cancelados')->send();
+                        }),
+
+                    // VOLVER ATRÁS
+                    Tables\Actions\Action::make('volver_a_armar')
+                        ->label('Volver a "Para Armar"')
+                        ->icon('heroicon-m-arrow-uturn-left')
+                        ->color('warning')
+                        ->visible(fn (Order $record) => in_array($record->status instanceof \BackedEnum ? $record->status->value : $record->status, ['assembled', 'checked']) && is_null($record->parent_id))
+                        ->requiresConfirmation()
+                        ->form([
+                            Forms\Components\Textarea::make('reason')->label('Motivo del retroceso')->required()
+                        ])
+                        ->action(function (Order $record, array $data) {
+                            $record->update(['status' => OrderStatus::Processing]);
+                            $record->children()->update(['status' => OrderStatus::Processing]);
+                            Notification::make()->warning()->title('Pedido regresado a preparación')->send();
+                        }),
+
+                    // BORRAR INDIVIDUAL
+                    Tables\Actions\DeleteAction::make()
+                        ->visible(fn (Order $record) => ($record->status instanceof \BackedEnum ? $record->status->value : $record->status) === 'draft' && is_null($record->parent_id))
+                        ->before(fn (Order $record) => $record->children()->delete()),
+
+                    // ANULAR CON SELECTOR DE DESTINO
+                    Tables\Actions\Action::make('anular_factura')
+                        ->label('Anular (NC)')
+                        ->icon('heroicon-o-x-circle')
+                        ->color('danger')
+                        ->visible(fn (Order $record) => 
+                            $record->invoices()->where('invoice_type', 'B')->exists() && 
+                            !$record->isAnnulled() && 
+                            is_null($record->parent_id)
+                        )
+                        ->requiresConfirmation()
+                        ->modalHeading('¿Anular Factura en AFIP?')
+                        ->form([
+                            Forms\Components\Select::make('next_step')
+                                ->label('¿Qué hacer con el pedido luego de la NC?')
+                                ->options([
+                                    'refacturar' => 'Volver a "Armado" (Para corregir mercadería y refacturar)',
+                                    'cancelar' => 'Cancelar Pedido Completamente (Devolver stock)',
+                                ])
+                                ->default('refacturar')
+                                ->required()
+                        ])
+                        ->action(function (Order $record, array $data) {
+                            $response = \App\Services\AfipService::anular($record);
+                            if ($response['success']) {
+                                if ($data['next_step'] === 'cancelar') {
+                                    $record->update(['status' => OrderStatus::Cancelled]);
+                                    $record->children()->update(['status' => OrderStatus::Cancelled]);
+                                } else {
+                                    $record->update(['status' => OrderStatus::Assembled]);
+                                    $record->children()->update(['status' => OrderStatus::Assembled]);
+                                }
+                                Notification::make()->success()->title($response['message'])->send();
+                            } else {
+                                Notification::make()->danger()->title('Error al Anular')->body($response['error'])->persistent()->send();
+                            }
+                        }),
+                ]),
             ])
             ->filters([
                 SelectFilter::make('status')->options(OrderStatus::class)->multiple(),

@@ -41,6 +41,19 @@ class OrderPicker extends Page
             ->get();
     }
 
+    // NUEVO: Trae pedidos cancelados que el armador aún no confirmó haber desarmado
+    public function getOrdersToDisassembleProperty()
+    {
+        return Order::where('status', OrderStatus::Cancelled)
+            ->whereHas('items', function($q) {
+                // Si la cantidad armada es mayor a 0, significa que la caja sigue físicamente armada
+                $q->where('packed_quantity', '>', 0); 
+            })
+            ->with(['client.locality'])
+            ->latest('updated_at')
+            ->get();
+    }
+
     public function getActiveOrderProperty()
     {
         if (!$this->activeOrderId) return null;
@@ -63,7 +76,6 @@ class OrderPicker extends Page
         $userId = auth()->id();
         $ahora = now();
 
-        // Solo bloquear si el bloqueo actual tiene menos de 2 minutos
         $isLocked = $order->locked_at && $order->locked_at->diffInMinutes($ahora) < 2;
 
         if ($isLocked && $order->locked_by !== $userId) {
@@ -83,7 +95,6 @@ class OrderPicker extends Page
     public function resetOrder()
     {
         if ($this->activeOrderId) {
-            // LIBERAR EL PEDIDO AL SALIR
             DB::table('orders')->where('id', $this->activeOrderId)->update([
                 'locked_by' => null,
                 'locked_at' => null,
@@ -230,5 +241,23 @@ class OrderPicker extends Page
             Notification::make()->title('Pedido Finalizado')->success()->send();
             $this->resetOrder();
         }
+    }
+
+    // NUEVO: El armador confirma que vació la caja del pedido cancelado
+    public function markAsDisassembled($orderId)
+    {
+        DB::transaction(function () use ($orderId) {
+            $order = Order::find($orderId);
+            if ($order) {
+                // Para que el armador sepa que ya lo desarmó, seteamos las cantidades empaquetadas a 0
+                // (El stock real se devuelve a través de tu trigger de DB que ya tenías armado para las NC/Cancelaciones)
+                $order->items()->update(['packed_quantity' => 0]);
+                
+                // Marcamos el pedido como "desarmado" (usando un campo provisorio si lo tienes, o simplemente confía en que packed_quantity = 0 lo saca de la vista)
+                // Si no tienes columna 'disassembled_at', el WhereHas('packed_quantity', '>', 0) en la query principal ya lo hará desaparecer.
+            }
+        });
+
+        Notification::make()->title('Caja Vaciada Correctamente')->success()->send();
     }
 }
