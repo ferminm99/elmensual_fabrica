@@ -3,70 +3,85 @@
 <head>
     <meta charset="utf-8">
     <style>
-        body { font-family: 'Helvetica', sans-serif; font-size: 12px; color: #111; }
-        .invoice-box { border: 1px solid #000; padding: 15px; }
-        .type-box { position: absolute; left: 47%; top: 0; width: 45px; height: 40px; border: 1px solid #000; background: #fff; text-align: center; font-size: 30px; font-weight: bold; z-index: 10; }
-        .header { width: 100%; border-bottom: 2px solid #000; margin-bottom: 15px; padding-bottom: 10px; }
-        .col { width: 50%; vertical-align: top; }
-        .items-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
-        .items-table th { background: #eee; border: 1px solid #000; padding: 8px; text-transform: uppercase; }
-        .items-table td { border: 1px solid #ccc; padding: 8px; }
-        .total-row { text-align: right; font-size: 18px; font-weight: bold; margin-top: 15px; border-top: 2px solid #000; padding-top: 10px; }
-        .watermark { text-align: center; color: #aaa; font-size: 10px; margin-top: 30px; }
+        body { font-family: 'Helvetica', sans-serif; font-size: 11px; color: #000; }
+        .invoice-box { padding: 10px; }
+        .header { width: 100%; margin-bottom: 20px; border-bottom: 2px solid #000; padding-bottom: 10px; }
+        /* APLICANDO EL MISMO TAMAÑO DE LOGO */
+        .logo { width: 65px; }
+        .doc-info { text-align: right; font-size: 12px; }
+        .client-info { margin-bottom: 20px; font-size: 11px; line-height: 1.4; }
+        
+        .items-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        .items-table th { border-top: 1px solid #000; border-bottom: 1px solid #000; padding: 6px 0; text-align: left; text-transform: uppercase; font-size: 10px; }
+        .items-table td { padding: 6px 0; vertical-align: top; font-size: 10px; }
+        
+        .text-center { text-align: center; }
+        .text-right { text-align: right; }
+        
+        .totals-table { width: 100%; margin-top: 20px; }
+        .total-row { font-size: 14px; font-weight: bold; }
+        .totals-border { border-top: 2px solid #000; padding-top: 5px; }
     </style>
 </head>
 <body>
     <div class="invoice-box">
-        <div class="type-box">X</div>
-        
         <table class="header">
             <tr>
-                <td class="col">
-                    <h1 style="margin:0; color: #000;">EL MENSUAL</h1>
-                    <p><strong>DOCUMENTO NO VÁLIDO COMO FACTURA</strong><br>
-                    Uso interno / Presupuesto</p>
+                <td style="width: 50%; vertical-align: top;">
+                    {{-- REEMPLAZO TEXTO POR LOGO --}}
+                    <img src="{{ public_path('images/logo.png') }}" class="logo"><br>
+                    <span style="font-weight: bold; font-size: 14px;">EL MENSUAL</span><br>
+                    <span style="font-size: 9px; color: #555;">USO INTERNO / NO VÁLIDO COMO FACTURA</span>
                 </td>
-                <td class="col" style="text-align: right;">
-                    <h2 style="margin:0;">PRESUPUESTO</h2>
-                    <p><strong>Nro Pedido:</strong> #{{ $order->id }}<br>
-                    <strong>Fecha:</strong> {{ now()->format('d/m/Y') }}<br>
+                <td style="width: 50%; vertical-align: top;" class="doc-info">
+                    <h2 style="margin:0;">PRESUPUESTO X</h2>
+                    <strong>FC01-X 00000-{{ str_pad($order->id, 8, '0', STR_PAD_LEFT) }}</strong><br><br>
+                    Fecha: {{ now()->format('d/m/y') }}
                 </td>
             </tr>
         </table>
 
-        <div style="margin-bottom: 15px; padding: 10px; background: #f9f9f9; border: 1px solid #ddd;">
-            <strong>CLIENTE:</strong> {{ $order->client->name }}<br>
-            <strong>ZONA/LOCALIDAD:</strong> {{ $order->client->locality->name ?? '-' }}
+        <div class="client-info">
+            {{ str_pad($order->client->id, 5, '0', STR_PAD_LEFT) }} &nbsp;&nbsp;&nbsp; {{ strtoupper($order->client->name) }}<br>
+            {{ strtoupper($order->client->address ?? 'DOMICILIO S/D') }}<br>
+            {{ strtoupper($order->client->tax_condition ?? 'CONSUMIDOR FINAL') }} &nbsp;&nbsp;&nbsp; {{ $order->client->tax_id ?? '' }}<br>
+            CUENTA CORRIENTE
         </div>
 
         <table class="items-table">
             <thead>
                 <tr>
-                    <th>Descripción</th>
-                    <th>Cant.</th>
-                    <th>Precio Unit.</th>
-                    <th>Subtotal</th>
+                    <th style="width: 10%;" class="text-center">Cantidad</th>
+                    <th style="width: 15%;">Código</th>
+                    <th style="width: 45%;">Descripción</th>
+                    <th style="width: 15%;" class="text-right">Precio</th>
+                    <th style="width: 15%;" class="text-right">TOTAL</th>
                 </tr>
             </thead>
             <tbody>
                 @foreach($itemsParaPresupuesto as $item)
                 <tr>
-                    <td>{{ $item['article'] }} ({{ $item['color'] }} - {{ $item['size'] }})</td>
-                    <td style="text-align:center;">{{ $item['qty'] }}</td>
-                    <td style="text-align:right;">$ {{ number_format($item['price'], 2, ',', '.') }}</td>
-                    <td style="text-align:right;">$ {{ number_format($item['subtotal'], 2, ',', '.') }}</td>
+                    <td class="text-center">{{ $item['qty'] }}</td>
+                    <td>{{ $item['code'] }}</td>
+                    <td>{{ strtoupper($item['article']) }} SIN DETALLAR</td>
+                    <td class="text-right">{{ number_format($item['price'], 2, ',', '') }}</td>
+                    <td class="text-right">{{ number_format($item['subtotal'], 2, ',', '') }}</td>
                 </tr>
                 @endforeach
             </tbody>
         </table>
 
-        <div class="total-row">
-            TOTAL PRESUPUESTO: $ {{ number_format($totalPresupuesto, 2, ',', '.') }}
-        </div>
-        
-        <div class="watermark">
-            DOCUMENTO DE CONTROL INTERNO - NO VÁLIDO COMO COMPROBANTE FISCAL
-        </div>
+        <table class="totals-table">
+            <tr>
+                <td style="width: 70%;"></td>
+                <td style="width: 15%; text-align: right; font-weight: bold; padding-right: 15px;" class="totals-border">
+                    TOTAL
+                </td>
+                <td style="width: 15%; text-align: right;" class="totals-border total-row">
+                    {{ number_format($totalPresupuesto, 2, ',', '') }}
+                </td>
+            </tr>
+        </table>
     </div>
 </body>
 </html>

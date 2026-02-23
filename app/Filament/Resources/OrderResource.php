@@ -226,6 +226,55 @@ class OrderResource extends Resource
             ])
             ->filtersLayout(Tables\Enums\FiltersLayout::AboveContent)
             ->headerActions([
+                // 1. EL BOTÓN DEL CAI (NUEVO)
+                Tables\Actions\Action::make('configurar_cai')
+                    ->label('Talonario (CAI)')
+                    ->icon('heroicon-o-cog-8-tooth')
+                    // MAGIA: El botón se pone ROJO si el CAI vence en menos de 30 días
+                    ->color(function () {
+                        $settings = \App\Models\Setting::first();
+                        if (!$settings || !$settings->cai_expiry) return 'danger';
+                        $diasRestantes = \Carbon\Carbon::now()->diffInDays(\Carbon\Carbon::parse($settings->cai_expiry), false);
+                        return $diasRestantes <= 30 ? 'danger' : 'gray';
+                    })
+                    ->fillForm(function () {
+                        $settings = \App\Models\Setting::firstOrCreate(['id' => 1]);
+                        return $settings->toArray();
+                    })
+                    ->form([
+                        Forms\Components\TextInput::make('cai_number')
+                            ->label('Número de C.A.I. (AFIP)')
+                            ->required(),
+                        Forms\Components\DatePicker::make('cai_expiry')
+                            ->label('Fecha de Vencimiento')
+                            ->required()
+                            ->helperText(function () {
+                                $settings = \App\Models\Setting::first();
+                                if (!$settings || !$settings->cai_expiry) return '';
+                                $dias = \Carbon\Carbon::now()->diffInDays(\Carbon\Carbon::parse($settings->cai_expiry), false);
+                                if ($dias < 0) return new HtmlString("<span class='text-red-600 font-bold'>¡El CAI está vencido hace " . abs($dias) . " días!</span>");
+                                if ($dias <= 30) return new HtmlString("<span class='text-red-600 font-bold'>¡Atención! Vence en {$dias} días.</span>");
+                                return "Válido por {$dias} días más.";
+                            }),
+                        Forms\Components\Grid::make(2)->schema([
+                            Forms\Components\TextInput::make('remito_pv')
+                                ->label('Punto de Venta')
+                                ->numeric()
+                                ->default(1)
+                                ->required(),
+                            Forms\Components\TextInput::make('next_remito_number')
+                                ->label('Siguiente Nro de Remito')
+                                ->numeric()
+                                ->required(),
+                        ]),
+                    ])
+                    ->action(function (array $data) {
+                        $settings = \App\Models\Setting::firstOrCreate(['id' => 1]);
+                        $settings->update($data);
+                        Notification::make()->success()->title('Talonario Actualizado')->send();
+                    })
+                    ->modalWidth('md'),
+                    
                 Tables\Actions\Action::make('global_send_to_packing')
                     ->label('Lanzador Logístico')
                     ->icon('heroicon-o-rocket-launch')

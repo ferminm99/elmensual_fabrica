@@ -55,37 +55,67 @@ class OrderPdfController extends Controller
      */
     public function remito(Order $order)
     {
-        if ($order->billing_type === 'informal') {
-            abort(403, 'Los pedidos 100% informales no llevan remito.');
+        $settings = \App\Models\Setting::first();
+        $client = $order->client;
+
+        // 1. Buscar factura previa para el CAE
+        $invoice = $order->invoices()->latest()->first();
+        
+        // 2. Determinar la LETRA y TIPO
+        if ($invoice && $invoice->cae_afip) {
+            $letra = ($client->getAfipTaxConditionCode() === 1) ? 'A' : 'B';
+            $tipoDoc = 'FACTURA';
+            $esFiscal = true;
+        } else {
+            $letra = 'R';
+            $tipoDoc = 'REMITO';
+            $esFiscal = false;
         }
 
-        $groupedItems = $this->getConsolidatedItems($order);
-        $itemsParaRemito = [];
-        
-        foreach ($groupedItems as $skuId => $items) {
-            $firstItem = $items->first();
-            
-            // Cantidad total real (100%)
-            $qty100 = $items->sum(fn($i) => $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity);
-            
-            if ($qty100 <= 0) continue;
+        $orderIds = Order::where('id', $order->id)->orWhere('parent_id', $order->id)->pluck('id')->toArray();
+        $itemsAgrupados = OrderItem::with('article')->whereIn('order_id', $orderIds)->get()->groupBy('article_id');
 
-            // Cantidad al 50% para Duplicado/Triplicado si es mixto
-            $qty50 = $order->billing_type === 'mixed' ? max(1, floor($qty100 / 2)) : $qty100;
+        $itemsParaPdf = [];
+        $subtotalBruto = 0;
 
-            $itemsParaRemito[] = [
-                'article' => $firstItem->article->name,
-                'color'   => $firstItem->sku->color->name ?? '',
-                'size'    => $firstItem->sku->size->name ?? '',
-                'qty_100' => $qty100, 
-                'qty_50'  => $qty50,  
+        foreach ($itemsAgrupados as $articleId => $items) {
+            $first = $items->first();
+            $qty = $items->sum(fn($i) => $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity);
+            if ($qty <= 0) continue;
+
+            $qty_final = ($order->billing_type === 'mixed') ? max(1, floor($qty / 2)) : $qty;
+            $price = $items->max('unit_price');
+            $totalLinea = $qty_final * $price;
+            $subtotalBruto += $totalLinea;
+
+            $itemsParaPdf[] = [
+                'code' => $first->article->code ?? 'S/C',
+                'article' => $first->article->name,
+                'qty' => $qty_final,
+                'price' => $price,
+                'total' => $totalLinea
             ];
         }
 
-        $pdf = Pdf::loadView('pdf.remito', compact('order', 'itemsParaRemito'));
-        return $pdf->stream('Remito_'.$order->id.'.pdf');
-    }
+        // 3. Cálculos de Descuento e IVA
+        $dtoPorc = $client->default_discount ?? 0;
+        $dtoMonto = $subtotalBruto * ($dtoPorc / 100);
+        $netoConDto = $subtotalBruto - $dtoMonto;
+        $iva = $esFiscal ? ($netoConDto * 0.21) : 0;
+        $totalFinal = $netoConDto + $iva;
 
+        $totales = [
+            'bruto' => $subtotalBruto,
+            'dto_p' => $dtoPorc,
+            'dto_m' => $dtoMonto,
+            'neto' => $netoConDto,
+            'iva' => $iva,
+            'total' => $totalFinal
+        ];
+
+        return Pdf::loadView('pdf.remito', compact('order', 'itemsParaPdf', 'totales', 'settings', 'letra', 'tipoDoc', 'esFiscal', 'invoice'))->stream();
+    }
+    
     /**
      * PRESUPUESTO / BOLETA INTERNA (X)
      */
@@ -95,17 +125,24 @@ class OrderPdfController extends Controller
             abort(403, 'Los pedidos 100% fiscales no llevan presupuesto interno.');
         }
 
-        $groupedItems = $this->getConsolidatedItems($order);
+        $orderIds = Order::where('id', $order->id)->orWhere('parent_id', $order->id)->pluck('id')->toArray();
+        
+        // Agrupamos por ARTÍCULO (Ignoramos colores y talles como pediste)
+        $itemsAgrupados = OrderItem::with('article')
+            ->whereIn('order_id', $orderIds)
+            ->get()
+            ->groupBy('article_id');
+
         $itemsParaPresupuesto = [];
         $totalPresupuesto = 0;
 
-        foreach ($groupedItems as $skuId => $items) {
-            $firstItem = $items->first();
+        foreach ($itemsAgrupados as $articleId => $items) {
+            $first = $items->first();
             $qty = $items->sum(fn($i) => $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity);
             
             if ($qty <= 0) continue;
 
-            // Si es mixto, el presupuesto es por el 50% restante
+            // Si es mixto, el presupuesto interno es por la MITAD de la cantidad
             if ($order->billing_type === 'mixed') {
                 $qty = max(1, ceil($qty / 2)); 
             }
@@ -115,9 +152,8 @@ class OrderPdfController extends Controller
             $totalPresupuesto += $subtotal;
 
             $itemsParaPresupuesto[] = [
-                'article'  => $firstItem->article->name,
-                'color'    => $firstItem->sku->color->name ?? '',
-                'size'     => $firstItem->sku->size->name ?? '',
+                'code'     => $first->article->code ?? 'S/C', // Agregamos el código
+                'article'  => $first->article->name, // Solo el nombre del artículo
                 'qty'      => $qty,
                 'price'    => $price,
                 'subtotal' => $subtotal,
