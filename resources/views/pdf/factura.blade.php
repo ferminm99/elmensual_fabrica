@@ -16,14 +16,17 @@
     </style>
 </head>
 <body>
+    @php
+        $letra = ($order->client->getAfipTaxConditionCode() === 1) ? 'A' : 'B';
+    @endphp
     <div class="invoice-box">
-        <div class="type-box">B</div>
+        <div class="type-box">{{ $letra }}</div>
         
         <table class="header">
             <tr>
                 <td class="col">
                     <h1 style="margin:0; color: #000;">EL MENSUAL</h1>
-                    <p><strong>Razón Social:</strong> LAMOTEX.<br>
+                    <p><strong>Razón Social:</strong> LAMOTEX S.A.<br>
                     <strong>Domicilio:</strong> Saladillo, Buenos Aires<br>
                     <strong>Condición IVA:</strong> Responsable Inscripto</p>
                 </td>
@@ -31,9 +34,9 @@
                     <h2 style="margin:0;">{{ $invoice->invoice_type === 'NC' ? 'NOTA DE CRÉDITO' : 'FACTURA' }}</h2>
                     <p><strong>Nro:</strong> {{ $invoice->number }}<br>
                     <strong>Fecha:</strong> {{ $invoice->created_at->format('d/m/Y') }}<br>
-                    <strong>CUIT:</strong> 30633784104<br>
+                    <strong>CUIT:</strong> 30-63378410-4<br>
                     <strong>Ing. Brutos:</strong> 30-63378410-4<br>
-                    <strong>Inicio Actividades:</strong> 01/01/2024</p>
+                    <strong>Inicio Actividades:</strong> 01/07/1989</p>
                 </td>
             </tr>
         </table>
@@ -41,60 +44,28 @@
         <div style="margin-bottom: 15px; padding: 5px; border: 1px solid #eee;">
             <strong>CLIENTE:</strong> {{ $order->client->name }}<br>
             <strong>CUIT/DNI:</strong> {{ $order->client->tax_id ?? 'Sin CUIT' }}<br>
-            <strong>IVA:</strong> {{ $order->client->tax_condition ?? 'Consumidor Final' }}
+            <strong>IVA:</strong> {{ strtoupper($order->client->tax_condition ?? 'Consumidor Final') }}
         </div>
 
         <table class="items-table">
             <thead>
                 <tr>
-                    <th>Descripción</th>
-                    <th>Cant.</th>
-                    <th>Precio Unit.</th>
-                    <th>Subtotal</th>
+                    <th style="width: 10%;">Cant.</th>
+                    <th style="width: 15%;">Código</th>
+                    <th style="width: 45%;">Descripción</th>
+                    <th style="width: 15%;">Precio Unit.</th>
+                    <th style="width: 15%;">Subtotal</th>
                 </tr>
             </thead>
             <tbody>
-                @php
-                    // MAGIA: Obtenemos items del padre y de todos sus hijos
-                    $orderIds = \App\Models\Order::where('id', $order->id)->orWhere('parent_id', $order->id)->pluck('id')->toArray();
-                    $itemsAgrupados = \App\Models\OrderItem::with(['article', 'sku.color', 'sku.size'])
-                                        ->whereIn('order_id', $orderIds)
-                                        ->get();
-                                        
-                    // Agrupamos por SKU para mostrar cada talle/color por separado en la factura
-                    $groupedBySku = $itemsAgrupados->groupBy('sku_id');
-                @endphp
-
-                @foreach($groupedBySku as $skuId => $items)
-                    @php
-                        // Obtenemos el primer item de este grupo para sacar los datos del artículo
-                        $firstItem = $items->first();
-                        
-                        // Sumamos la cantidad armada (si es 0, usamos la pedida original)
-                        $qty = $items->sum(function($i) {
-                            return $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity;
-                        });
-                        
-                        // Si es factura mixta (50%), dividimos la cantidad impresa por la mitad
-                        // Solo para el PDF de la factura fiscal
-                        if ($order->billing_type === 'mixed') {
-                            $qty = max(1, floor($qty / 2)); // max(1) evita que salgan ceros si pidió 1 sola unidad
-                        }
-
-                        $price = $items->max('unit_price');
-                        $subtotal = $qty * $price;
-                        
-                        if ($qty <= 0) continue;
-                    @endphp
-                    <tr>
-                        <td>
-                            {{ $firstItem->article->name }} 
-                            ({{ $firstItem->sku->color->name ?? '' }} - {{ $firstItem->sku->size->name ?? '' }})
-                        </td>
-                        <td style="text-align:center;">{{ $qty }}</td>
-                        <td style="text-align:right;">$ {{ number_format($price, 2, ',', '.') }}</td>
-                        <td style="text-align:right;">$ {{ number_format($subtotal, 2, ',', '.') }}</td>
-                    </tr>
+                @foreach($itemsParaPdf as $item)
+                <tr>
+                    <td style="text-align:center;">{{ $item['qty'] }}</td>
+                    <td style="text-align:center;">{{ $item['code'] }}</td>
+                    <td>{{ strtoupper($item['article']) }} SIN DETALLAR</td>
+                    <td style="text-align:right;">$ {{ number_format($item['price'], 2, ',', '.') }}</td>
+                    <td style="text-align:right;">$ {{ number_format($item['total'], 2, ',', '.') }}</td>
+                </tr>
                 @endforeach
             </tbody>
         </table>
@@ -103,9 +74,14 @@
             TOTAL {{ $invoice->invoice_type === 'NC' ? 'CRÉDITO' : 'FINAL' }}: $ {{ number_format(abs($invoice->total_fiscal), 2, ',', '.') }}
         </div>
 
-        <div class="cae-data">
-            <strong>CAE N°:</strong> {{ $invoice->cae_afip }}<br>
-            <strong>Vencimiento CAE:</strong> {{ \Carbon\Carbon::parse($invoice->cae_expiry)->format('d/m/Y') }}
+        <div class="cae-data" style="position: relative; height: 80px;">
+            @if(isset($qrImage))
+                <img src="{{ $qrImage }}" width="70" style="position: absolute; left: 0; bottom: 0;">
+            @endif
+            <div style="position: absolute; right: 0; bottom: 0;">
+                <strong>CAE N°:</strong> {{ $invoice->cae_afip }}<br>
+                <strong>Vencimiento CAE:</strong> {{ \Carbon\Carbon::parse($invoice->cae_expiry)->format('d/m/Y') }}
+            </div>
         </div>
     </div>
 </body>

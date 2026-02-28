@@ -124,26 +124,27 @@ class AfipService
                 'Auth' => $auth, 'PtoVta' => self::$PV, 'CbteTipo' => $tipo_cbte
             ]);
             $next = $ultimo->FECompUltimoAutorizadoResult->CbteNro + 1;
-
+            
             // --- LÓGICA DE TOTAL CONSOLIDADO (PADRE E HIJOS) ---
             $orderIds = Order::where('id', $record->id)->orWhere('parent_id', $record->id)->pluck('id')->toArray();
-            
-            $itemsAgrupados = OrderItem::whereIn('order_id', $orderIds)->get();
-            
-            $totalCostoPedido = 0;
-            foreach ($itemsAgrupados as $item) {
+            $itemsConsolidados = OrderItem::whereIn('order_id', $orderIds)->get();
+
+            $montoTotalMercaderia = 0;
+            foreach ($itemsConsolidados as $item) {
+                // Cantidad armada (o pedida si no hay armado)
                 $qty = $item->packed_quantity > 0 ? $item->packed_quantity : $item->quantity;
-                $totalCostoPedido += ($qty * $item->unit_price);
+                $montoTotalMercaderia += ($qty * $item->unit_price);
             }
 
-            $total = round($totalCostoPedido, 2);
+            // Usamos el tipo de facturación que viene del formulario ($data)
+            $total = round($montoTotalMercaderia, 2);
 
-            // Si es mixto, le mandamos a AFIP solo la mitad del dinero
+            // SOLO si el usuario eligió "mixed" en el modal, dividimos por 2
             if (isset($data['billing_type']) && $data['billing_type'] === 'mixed') {
                 $total = round($total / 2, 2);
             }
 
-            if ($total <= 0) throw new Exception("El pedido no tiene un monto válido para facturar.");
+            if ($total <= 0) throw new Exception("El monto a facturar debe ser mayor a 0.");
 
             $neto  = round($total / 1.21, 2);
             $iva   = round($total - $neto, 2);
@@ -156,7 +157,7 @@ class AfipService
                 $alicIvaId = 5; 
                 $baseImp   = $neto;
             }
-
+            
             $req = [
                 'Auth' => $auth,
                 'FeCAEReq' => [
@@ -219,10 +220,23 @@ class AfipService
     {
         try {
             self::init();
-            $facturaOriginal = $order->invoices()->where('invoice_type', 'B')->latest()->first();            
             
-            if (!$facturaOriginal || empty($facturaOriginal->number)) {
-                return ['success' => false, 'error' => "Falta el número de factura original en la BD."];
+            // Buscamos todas las facturas B del pedido
+            $facturasB = $order->invoices()->where('invoice_type', 'B')->latest()->get();
+            $facturaOriginal = null;
+
+            // Filtramos para encontrar la que NO tenga una Nota de Crédito asociada
+            foreach ($facturasB as $f) {
+                $fueAnulada = $order->invoices()->where('invoice_type', 'NC')->where('parent_id', $f->id)->exists();
+                if (!$fueAnulada) {
+                    $facturaOriginal = $f;
+                    break;
+                }
+            }
+
+            if (!$facturaOriginal) {
+                // Si no hay nada que anular fiscalmente, le decimos al Resource que proceda
+                return ['success' => true, 'message' => "No hay facturas pendientes de anulación."];
             }
 
             $partes = explode('-', $facturaOriginal->number);

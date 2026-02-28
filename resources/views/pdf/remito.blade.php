@@ -180,6 +180,16 @@
                 @endif
             </div>
         </div>
+        @if(isset($qrImage) && $qrImage)
+            <div style="position: absolute; bottom: 30px; left: 15px; text-align: left; width: 250px;">
+                <img src="{{ $qrImage }}" width="70" style="float: left; margin-right: 10px;">
+                <div style="font-size: 7px; margin-top: 15px;">
+                    <strong>Comprobante Autorizado</strong><br>
+                    La veracidad del presente comprobante podrá ser<br>
+                    verificada ingresando a la web de AFIP/ARCA.
+                </div>
+            </div>
+        @endif
     </div>
     @endforeach
 </body>

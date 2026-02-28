@@ -358,31 +358,90 @@ class OrderResource extends Resource
                     ->color('success')
                     ->button()
                     ->modalWidth('7xl')
-                    ->visible(fn (Order $record) => 
-                        in_array($record->status instanceof \BackedEnum ? $record->status->value : $record->status, ['assembled', 'standby']) && 
-                        !$record->invoices()->where('invoice_type', 'B')->exists() &&
-                        is_null($record->parent_id)
-                    )
+                    // --- CANDADO INTELIGENTE ---
+                    ->visible(function (Order $record) {
+                        // 1. Nunca mostrar en los hijos, solo en el Padre
+                        if (!is_null($record->parent_id)) return false;
+
+                        $status = $record->status instanceof \BackedEnum ? $record->status->value : $record->status;
+
+                        // 2. Solo habilitado si el estado actual es Assembled o Standby
+                        if (!in_array($status, ['assembled', 'standby'])) return false;
+
+                        // 3. REGLA CRÍTICA: Si tiene hijos, no dejar facturar hasta que TODOS estén armados.
+                        $hijosSinArmar = $record->children()->whereIn('status', ['draft', 'processing'])->exists();
+                        if ($hijosSinArmar) {
+                            return false; 
+                        }
+
+                        return true;
+                    })
+                    // ---------------------------
+                    ->action(function (Order $record, array $data) {
+                        // --- 1. CHEQUEO DE PARIDAD PARA MIXTO ---
+                        $orderIds = \App\Models\Order::where('id', $record->id)->orWhere('parent_id', $record->id)->pluck('id')->toArray();
+                        $itemsConsolidados = \App\Models\OrderItem::whereIn('order_id', $orderIds)->get();
+                        
+                        $totalPrendas = $itemsConsolidados->sum(function($i) {
+                            return $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity;
+                        });
+
+                        if ($data['billing_type'] === 'mixed' && $totalPrendas % 2 !== 0) {
+                            Notification::make()->danger()->title('Cantidad Impar')->body("No podés hacer 50/50 con {$totalPrendas} prendas. Agregá o quitá una para que sea par.")->persistent()->send();
+                            return;
+                        }
+
+                        // --- 2. LÓGICA DE ANULACIÓN DE FACTURA VIEJA ---
+                        $facturaVieja = $record->invoices()->where('invoice_type', 'B')->latest()->first();
+                        $estaAnulada = $facturaVieja ? $record->invoices()->where('invoice_type', 'NC')->where('parent_id', $facturaVieja->id)->exists() : false;
+
+                        if ($facturaVieja && !$estaAnulada) {
+                            Notification::make()->warning()->title("Generando Nota de Crédito...")->body("Anulando factura previa para actualizar importes.")->send();
+                            
+                            $resNC = \App\Services\AfipService::anular($record);
+                            
+                            if (!$resNC['success']) {
+                                Notification::make()->danger()->title("Error al generar NC")->body($resNC['error'])->send();
+                                return;
+                            }
+                        }
+
+                        // --- 3. FACTURAR TODO JUNTO NUEVAMENTE ---
+                        $record->update(['billing_type' => $data['billing_type']]);
+                        
+                        // Si es informal (100% negro), no llamamos a AFIP
+                        if ($data['billing_type'] === 'informal') {
+                            $record->update(['status' => OrderStatus::Checked, 'invoiced_at' => now()]);
+                            $record->children()->update(['status' => OrderStatus::Checked]);
+                            Notification::make()->success()->title("Pedido verificado internamente (100% Negro)")->send();
+                            return;
+                        }
+
+                        $response = \App\Services\AfipService::facturar($record, $data);
+
+                        if ($response['success']) {
+                            $record->update([
+                                'status' => OrderStatus::Checked,
+                                'invoice_number' => $data['invoice_number'] ?? null,
+                                'invoiced_at' => now(),
+                            ]);
+                            $record->children()->update(['status' => OrderStatus::Checked]);
+                            Notification::make()->success()->title("Facturación completada exitosamente")->send();
+                        } else {
+                            Notification::make()->danger()->title('Error AFIP')->body($response['error'])->send();
+                        }
+                    })
                     ->form(function (Order $record) {
-                        // FIX DEFINITIVO: Traemos el Padre y TODOS los hijos
-                        $orderIds = \App\Models\Order::where('id', $record->id)
-                            ->orWhere('parent_id', $record->id)
-                            ->pluck('id')
-                            ->toArray();
-                            
-                        $itemsAgrupados = \App\Models\OrderItem::with('article')
-                            ->whereIn('order_id', $orderIds)
-                            ->get();
-                            
+                        // Traemos el Padre y TODOS los hijos para el resumen
+                        $orderIds = \App\Models\Order::where('id', $record->id)->orWhere('parent_id', $record->id)->pluck('id')->toArray();
+                        $itemsAgrupados = \App\Models\OrderItem::with('article')->whereIn('order_id', $orderIds)->get();
+                        
                         $grouped = $itemsAgrupados->groupBy('article_id');
                         $tbody = '';
                         $totalCostoPedido = 0;
 
                         foreach ($grouped as $articleId => $items) {
-                            $qty = $items->sum(function($i) {
-                                return $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity;
-                            });
-                            
+                            $qty = $items->sum(function($i) { return $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity; });
                             if ($qty <= 0) continue;
                             
                             $price = $items->max('unit_price');
@@ -404,7 +463,10 @@ class OrderResource extends Resource
                         }
 
                         $resumenHtml = "
-                        <div class='fi-ta-content overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10 mb-2'>
+                        <div class='mb-2 text-sm text-gray-600 dark:text-gray-400'>
+                            <strong>Atención:</strong> Si el pedido ya tenía una factura, se anulará automáticamente y se emitirá una nueva por el total consolidado.
+                        </div>
+                        <div class='fi-ta-content overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10 mb-4'>
                             <div class='overflow-x-auto'>
                                 <table class='w-full text-left divide-y divide-gray-200 dark:divide-white/5'>
                                     <thead class='bg-gray-50 dark:bg-white/5'>
@@ -443,7 +505,7 @@ class OrderResource extends Resource
                                     Forms\Components\Select::make('billing_type')
                                         ->label('Tipo de Facturación')
                                         ->options(['fiscal' => 'Fiscal (100% Blanco)', 'informal' => 'Interno (100% Negro)', 'mixed' => 'Mixto (50/50)'])
-                                        ->default($record->client->billing_type ?? 'mixed')
+                                        ->default($record->billing_type ?? 'mixed')
                                         ->required(),
                                         
                                     Forms\Components\Select::make('payment_method')
@@ -469,38 +531,7 @@ class OrderResource extends Resource
                                 ]),
                             ]),
                         ];
-                    })
-                    ->action(function (Order $record, array $data) {
-                        // Guardamos el tipo de facturación final elegido en el Padre para usarlo luego en los PDFs
-                        $record->update(['billing_type' => $data['billing_type']]);
-                        
-                        // Si es informal, no llamamos a AFIP, solo cerramos el pedido
-                        if ($data['billing_type'] === 'informal') {
-                            $record->update([
-                                'status' => OrderStatus::Checked,
-                                'invoiced_at' => now(),
-                            ]);
-                            $record->children()->update(['status' => OrderStatus::Checked]);
-                            Notification::make()->success()->title("Pedido verificado internamente (100% Negro)")->send();
-                            return;
-                        }
-
-                        // Si es Fiscal o Mixto, llamamos a AFIP
-                        $response = \App\Services\AfipService::facturar($record, $data);
-                        if ($response['success']) {
-                            $record->update([
-                                'status' => OrderStatus::Checked,
-                                'invoice_number' => $data['invoice_number'] ?? null,
-                                'invoiced_at' => now(),
-                            ]);
-                            $record->children()->update(['status' => OrderStatus::Checked]);
-                            Notification::make()->success()->title($response['message'])->send();
-                        } else {
-                            Notification::make()->danger()->title('Error AFIP')->body($response['error'])->persistent()->send();
-                        }
-                    })
-                    ->requiresConfirmation(),
-
+                    }),
                 // CHECKED -> DISPATCHED (Despachar)
                 Tables\Actions\Action::make('despachar')
                     ->label('Cargar en Viajante')
@@ -544,6 +575,18 @@ class OrderResource extends Resource
                         )
                         ->url(fn (Order $record) => url('/admin/orders/'.$record->id.'/remito'))
                         ->openUrlInNewTab(),
+                    // PRESUPUESTO :
+                    Tables\Actions\Action::make('print_presupuesto')
+                        ->label('Boleta Interna (X)')
+                        ->icon('heroicon-o-document-currency-dollar')
+                        ->color('warning')
+                        ->visible(fn (Order $record) => 
+                            in_array($record->billing_type, ['informal', 'mixed']) && 
+                            in_array($record->status->value ?? $record->status, ['checked', 'dispatched', 'paid']) && 
+                            is_null($record->parent_id)
+                        )
+                        ->url(fn (Order $record) => url('/admin/orders/'.$record->id.'/presupuesto'))
+                        ->openUrlInNewTab(),
 
                     // 2. FACTURA AFIP (Inteligente para múltiples facturas)
                     Tables\Actions\Action::make('descargar_factura')
@@ -551,28 +594,29 @@ class OrderResource extends Resource
                         ->icon('heroicon-o-document-text')
                         ->color('success')
                         ->visible(fn (Order $record) => $record->invoices()->where('invoice_type', 'B')->exists() && is_null($record->parent_id))
-                        ->action(function (Order $record, array $data) {
-                            // Si solo hay una, redirigimos directo
+                        // Si solo hay una, abrimos directo. Si hay varias, Filament muestra el selector.
+                        ->url(function (Order $record) {
                             $invoices = $record->invoices()->where('invoice_type', 'B')->get();
                             if ($invoices->count() === 1) {
-                                return redirect()->route('order.invoice.download', ['order' => $record->id, 'type' => 'B', 'invoice_id' => $invoices->first()->id]);
+                                return route('order.invoice.download', ['order' => $record->id, 'type' => 'B', 'invoice_id' => $invoices->first()->id]);
                             }
+                            return null; // Si devuelve null, se ejecuta el form/action de abajo
                         })
-                        // Si hay más de una, Filament muestra este form en un modal automáticamente
+                        ->openUrlInNewTab()
                         ->form(function (Order $record) {
                             $invoices = $record->invoices()->where('invoice_type', 'B')->get();
                             if ($invoices->count() <= 1) return [];
-
                             return [
                                 Forms\Components\Select::make('invoice_id')
-                                    ->label('Seleccione la factura que desea ver')
-                                    ->options($invoices->mapWithKeys(fn($i) => [$i->id => "Factura {$i->number} ({$i->created_at->format('d/m/Y H:i')})"]))
+                                    ->label('Seleccione la factura')
+                                    ->options($invoices->mapWithKeys(fn($i) => [$i->id => "Factura {$i->number}"]))
                                     ->required(),
                             ];
                         })
-                        ->action(function (Order $record, array $data) {
-                            $invoiceId = $data['invoice_id'] ?? $record->invoices()->where('invoice_type', 'B')->first()->id;
-                            return redirect()->route('order.invoice.download', ['order' => $record->id, 'type' => 'B', 'invoice_id' => $invoiceId]);
+                        ->action(function (Order $record, array $data, $livewire) {
+                            $invoiceId = $data['invoice_id'];
+                            $url = route('order.invoice.download', ['order' => $record->id, 'invoice_id' => $invoiceId]);
+                            $livewire->js("window.open('{$url}', '_blank')");
                         }),
 
                     // 4. NOTA DE CRÉDITO (Inteligente para múltiples NC)
@@ -603,7 +647,15 @@ class OrderResource extends Resource
                 ->icon('heroicon-m-printer')
                 ->button()
                 ->color('gray')
-                ->visible(fn(Order $record) => is_null($record->parent_id) && in_array($record->status instanceof \BackedEnum ? $record->status->value : $record->status, ['checked', 'dispatched', 'paid'])),
+                ->visible(function (Order $record) {
+                    if (!is_null($record->parent_id)) return false;
+                    
+                    $status = $record->status instanceof \BackedEnum ? $record->status->value : $record->status;
+                    $tieneFacturas = $record->invoices()->exists();
+                    
+                    // Se muestra si está cerrado (facturado/despachado/pagado) o si ya se le emitió alguna factura/NC antes.
+                    return in_array($status, ['checked', 'dispatched', 'paid']) || $tieneFacturas;
+                }),
                 
                 // ==========================================
                 // ACCIONES ADMINISTRATIVAS SECUNDARIAS
@@ -637,18 +689,39 @@ class OrderResource extends Resource
                         ->visible(function (Order $record) {
                             if (!is_null($record->parent_id)) return false;
                             $status = $record->status instanceof \BackedEnum ? $record->status->value : $record->status;
-                            $invalidStatuses = ['dispatched', 'paid', 'cancelled'];
-                            $hasValidInvoice = $record->invoices()->where('invoice_type', 'B')->exists() && !$record->isAnnulled();
-                            return !in_array($status, $invalidStatuses) && !$hasValidInvoice;
+                            // No se puede cancelar lo que ya se pagó o ya se canceló
+                            return !in_array($status, ['paid', 'cancelled']);
                         })
                         ->requiresConfirmation()
                         ->form([
                             Forms\Components\Textarea::make('reason')->label('Motivo de cancelación')->required()
                         ])
                         ->action(function (Order $record, array $data) {
+                            // 1. Verificamos si existe una factura "viva" (tipo B que no tenga ya una NC)
+                            $ultimaFactura = $record->invoices()->where('invoice_type', 'B')->latest()->first();
+                            $yaAnulada = $ultimaFactura ? $record->invoices()->where('invoice_type', 'NC')->where('parent_id', $ultimaFactura->id)->exists() : true;
+
+                            if ($ultimaFactura && !$yaAnulada) {
+                                Notification::make()->warning()->title("Anulando comprobantes en AFIP...")->send();
+                                
+                                // Ejecutamos la anulación fiscal
+                                $resAFIP = \App\Services\AfipService::anular($record);
+                                
+                                if (!$resAFIP['success']) {
+                                    Notification::make()
+                                        ->danger()
+                                        ->title('Error AFIP: No se pudo cancelar')
+                                        ->body($resAFIP['error'])
+                                        ->persistent()
+                                        ->send();
+                                    return; // FRENAMOS: No cancelamos el pedido si AFIP rechazó la NC
+                                }
+                            }
+
+                            // 2. Si no había factura o la NC salió bien, cancelamos internamente
                             $record->update(['status' => OrderStatus::Cancelled]);
                             $record->children()->update(['status' => OrderStatus::Cancelled]);
-                            Notification::make()->warning()->title('Pedido y derivados Cancelados')->send();
+                            Notification::make()->success()->title('Pedido anulado y factura cancelada en AFIP').send();
                         }),
 
                     // VOLVER ATRÁS
