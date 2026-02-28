@@ -682,6 +682,7 @@ class OrderResource extends Resource
                         }),
 
                     // CANCELAR PEDIDO
+                    // CANCELAR PEDIDO (Con anulación automática de TODAS las facturas vivas)
                     Tables\Actions\Action::make('cancelar_pedido')
                         ->label('Cancelar Pedido')
                         ->icon('heroicon-m-x-circle')
@@ -689,7 +690,6 @@ class OrderResource extends Resource
                         ->visible(function (Order $record) {
                             if (!is_null($record->parent_id)) return false;
                             $status = $record->status instanceof \BackedEnum ? $record->status->value : $record->status;
-                            // No se puede cancelar lo que ya se pagó o ya se canceló
                             return !in_array($status, ['paid', 'cancelled']);
                         })
                         ->requiresConfirmation()
@@ -697,31 +697,42 @@ class OrderResource extends Resource
                             Forms\Components\Textarea::make('reason')->label('Motivo de cancelación')->required()
                         ])
                         ->action(function (Order $record, array $data) {
-                            // 1. Verificamos si existe una factura "viva" (tipo B que no tenga ya una NC)
-                            $ultimaFactura = $record->invoices()->where('invoice_type', 'B')->latest()->first();
-                            $yaAnulada = $ultimaFactura ? $record->invoices()->where('invoice_type', 'NC')->where('parent_id', $ultimaFactura->id)->exists() : true;
+                            // 1. Buscamos TODAS las facturas "vivas" (tipo B que no tengan ya una NC asociada)
+                            $facturasVivas = $record->invoices()->where('invoice_type', 'B')->get()->filter(function($factura) use ($record) {
+                                return !$record->invoices()
+                                    ->where('invoice_type', 'NC')
+                                    ->where('parent_id', $factura->id)
+                                    ->exists();
+                            });
 
-                            if ($ultimaFactura && !$yaAnulada) {
+                            if ($facturasVivas->isNotEmpty()) {
                                 Notification::make()->warning()->title("Anulando comprobantes en AFIP...")->send();
                                 
-                                // Ejecutamos la anulación fiscal
-                                $resAFIP = \App\Services\AfipService::anular($record);
-                                
-                                if (!$resAFIP['success']) {
-                                    Notification::make()
-                                        ->danger()
-                                        ->title('Error AFIP: No se pudo cancelar')
-                                        ->body($resAFIP['error'])
-                                        ->persistent()
-                                        ->send();
-                                    return; // FRENAMOS: No cancelamos el pedido si AFIP rechazó la NC
+                                foreach ($facturasVivas as $factura) {
+                                    // IMPORTANTE: Usamos el método que recibe el objeto Invoice directamente
+                                    // para asegurar que anulamos el comprobante correcto.
+                                    $resAFIP = \App\Services\AfipService::anularFactura($factura);
+                                    
+                                    if (!$resAFIP['success']) {
+                                        Notification::make()
+                                            ->danger()
+                                            ->title("Error AFIP: Factura {$factura->number}")
+                                            ->body($resAFIP['error'])
+                                            ->persistent()
+                                            ->send();
+                                        return; // FRENAMOS: No cancelamos el pedido si falla alguna anulación
+                                    }
                                 }
                             }
 
-                            // 2. Si no había factura o la NC salió bien, cancelamos internamente
+                            // 2. Si no había facturas o todas se anularon correctamente, procedemos
                             $record->update(['status' => OrderStatus::Cancelled]);
                             $record->children()->update(['status' => OrderStatus::Cancelled]);
-                            Notification::make()->success()->title('Pedido anulado y factura cancelada en AFIP').send();
+                            
+                            Notification::make()
+                                ->success()
+                                ->title('Pedido y facturas anulados correctamente.')
+                                ->send();
                         }),
 
                     // VOLVER ATRÁS

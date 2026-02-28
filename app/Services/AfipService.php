@@ -309,6 +309,60 @@ class AfipService
         }
     }
 
+    /**
+     * Anula una factura específica (más robusto que el anterior)
+     */
+    public static function anularFactura(Invoice $factura)
+    {
+        try {
+            self::init();
+            if ($factura->invoice_type !== 'B') throw new Exception("Solo se pueden anular Facturas B.");
+
+            $auth = self::getAuth();
+            $wsfe = self::getWsfeClient();
+            $tipo_nc = 8; // NC B
+            $ultimo = $wsfe->FECompUltimoAutorizado(['Auth' => $auth, 'PtoVta' => self::$PV, 'CbteTipo' => $tipo_nc]);
+            $nextNC = $ultimo->FECompUltimoAutorizadoResult->CbteNro + 1;
+
+            $total = abs($factura->total_fiscal);
+            $neto  = round($total / 1.21, 2);
+            $iva   = round($total - $neto, 2);
+
+            $req = [
+                'Auth' => $auth,
+                'FeCAEReq' => [
+                    'FeCabReq' => ['CantReg' => 1, 'PtoVta' => self::$PV, 'CbteTipo' => $tipo_nc],
+                    'FeDetReq' => ['FECAEDetRequest' => [[
+                        'Concepto' => 1, 'DocTipo' => 99, 'DocNro' => 0,
+                        'CbteDesde' => $nextNC, 'CbteHasta' => $nextNC, 'CbteFch' => date('Ymd'),
+                        'ImpTotal' => $total, 'ImpNeto' => ($iva > 0 ? $neto : $total), 
+                        'ImpIVA' => $iva, 'MonId' => 'PES', 'MonCotiz' => 1,
+                        'Iva' => ['AlicIva' => [['Id' => ($iva > 0 ? 5 : 3), 'BaseImp' => ($iva > 0 ? $neto : $total), 'Importe' => $iva]]],
+                        'CbtesAsoc' => ['CbteAsoc' => [['Tipo' => 6, 'PtoVta' => self::$PV, 'Nro' => (int) last(explode('-', $factura->number))]]]
+                    ]]]
+                ]
+            ];
+
+            $res = $wsfe->FECAESolicitar($req);
+            if ($res->FECAESolicitarResult->FeCabResp->Resultado == 'A') {
+                $det = $res->FECAESolicitarResult->FeDetResp->FECAEDetResponse;
+                $item = is_array($det) ? $det[0] : $det;
+
+                DB::transaction(function () use ($factura, $item, $total, $nextNC) {
+                    $factura->order->invoices()->create([
+                        'invoice_type' => 'NC', 'total_fiscal' => -$total, 'cae_afip' => $item->CAE,
+                        'cae_expiry' => \Illuminate\Support\Carbon::createFromFormat('Ymd', $item->CAEFchVto)->format('Y-m-d'),
+                        'number' => str_pad(self::$PV, 5, '0', STR_PAD_LEFT) . '-' . str_pad($nextNC, 8, '0', STR_PAD_LEFT),
+                        'parent_id' => $factura->id, 'order_id' => $factura->order_id
+                    ]);
+                    $factura->order->client->decrement('fiscal_debt', $total);
+                });
+                return ['success' => true];
+            }
+            return ['success' => false, 'error' => $res->FECAESolicitarResult->Errors->Err->Msg ?? 'Error AFIP'];
+        } catch (Exception $e) { return ['success' => false, 'error' => $e->getMessage()]; }
+    }
+
     private static function getAuth()
     {
         $tokenFile = self::$xmlFolder . 'TOKEN_CACHE.json';

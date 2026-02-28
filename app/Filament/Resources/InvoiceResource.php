@@ -142,6 +142,40 @@ class InvoiceResource extends Resource
             ->bulkActions([]);
     }
 
+    public static function form(Form $form): Form
+    {
+        return $form->schema([
+            Forms\Components\Section::make('Datos del Cliente')->schema([
+                Forms\Components\Grid::make(2)->schema([
+                    Forms\Components\Select::make('client_id')
+                        ->label('Cliente Registrado')
+                        ->relationship('client', 'name')
+                        ->searchable()
+                        ->live(),
+                    Forms\Components\TextInput::make('manual_client_name')
+                        ->label('Nombre/Razón Social (Eventual)')
+                        ->visible(fn (Get $get) => !$get('client_id')),
+                    Forms\Components\TextInput::make('manual_client_cuit')
+                        ->label('DNI/CUIT (Eventual)')
+                        ->visible(fn (Get $get) => !$get('client_id')),
+                ]),
+            ]),
+            Forms\Components\Section::make('Artículos')->schema([
+                Forms\Components\Repeater::make('items')
+                    ->schema([
+                        Forms\Components\Select::make('article_id')
+                            ->label('Artículo')
+                            ->options(\App\Models\Article::pluck('name', 'id'))
+                            ->required()->reactive()
+                            ->afterStateUpdated(fn ($state, Set $set) => 
+                                $set('unit_price', \App\Models\Article::find($state)?->price ?? 0)),
+                        Forms\Components\TextInput::make('quantity')->label('Cant.')->numeric()->default(1)->required(),
+                        Forms\Components\TextInput::make('unit_price')->label('Precio Unit.')->numeric()->prefix('$')->required(),
+                    ])->columns(3)->minItems(1)
+            ])
+        ]);
+    }
+    
     public static function getPages(): array
     {
         return [
