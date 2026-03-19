@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Enums\OrderStatus;
+use App\Models\Invoice;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use SoapClient;
@@ -118,8 +119,34 @@ class AfipService
             $auth = self::getAuth();
             $wsfe = self::getWsfeClient();
 
-            $tipo_cbte = 6; // Factura B
-            
+            // 1. DETERMINAR TIPO DE COMPROBANTE
+            if (!empty($data['alt_voucher_type'])) {
+                // Si elegiste Factura A o B a mano en el modal
+                $tipo_cbte = (int) $data['alt_voucher_type'];
+            } else {
+                // Lógica automática: Si el cliente es RI -> Factura A (1), sino Factura B (6)
+                $esRI = $record->client && $record->client->getAfipTaxConditionCode() === 1;
+                $tipo_cbte = $esRI ? 1 : 6;
+            }
+
+            // 2. DETERMINAR RECEPTOR (CUIT y TIPO DOC)
+            $docNro = 0;
+            $docTipo = 99; // Consumidor Final por defecto
+
+            // ¿Hay un CUIT alternativo escrito en el modal?
+            $taxIdFinal = !empty($data['alt_tax_id']) 
+                ? preg_replace('/[^0-9]/', '', $data['alt_tax_id']) 
+                : ($record->client ? preg_replace('/[^0-9]/', '', $record->client->tax_id) : '');
+
+            if (!empty($taxIdFinal)) {
+                $docNro = (int) $taxIdFinal;
+                // Si es Factura A, AFIP obliga a que el tipo de doc sea CUIT (80)
+                if ($tipo_cbte == 1) {
+                    $docTipo = 80;
+                } else {
+                    $docTipo = (strlen($taxIdFinal) > 8) ? 80 : 96; // CUIT o DNI
+                }
+            }
             $ultimo = $wsfe->FECompUltimoAutorizado([
                 'Auth' => $auth, 'PtoVta' => self::$PV, 'CbteTipo' => $tipo_cbte
             ]);
@@ -158,6 +185,21 @@ class AfipService
                 $baseImp   = $neto;
             }
             
+            $docTipo = 99; // Por defecto: Consumidor Final
+            $docNro = 0;
+
+            if ($record->client_id) {
+                // Si hay cliente, usamos su CUIT/DNI
+                $docNro = (int) preg_replace('/[^0-9]/', '', $record->client->tax_id);
+                // Si tiene más de 8 dígitos es CUIT (80), sino DNI (96). 
+                // Podés usar el método que ya tengas en el modelo Client si preferís.
+                $docTipo = (strlen($docNro) > 8) ? 80 : 96; 
+            } elseif (isset($data['manual_tax_id']) && $data['manual_tax_id'] > 0) {
+                // Si es carga manual
+                $docNro = (int) $data['manual_tax_id'];
+                $docTipo = (strlen($docNro) > 8) ? 80 : 96;
+            }
+
             $req = [
                 'Auth' => $auth,
                 'FeCAEReq' => [
@@ -165,7 +207,9 @@ class AfipService
                     'FeDetReq' => [
                         'FECAEDetRequest' => [
                             [
-                                'Concepto' => 1, 'DocTipo' => 99, 'DocNro' => 0,
+                                'Concepto' => 1, 
+                                'DocTipo' => $docTipo, 
+                                'DocNro' => $docNro,
                                 'CbteDesde' => $next, 'CbteHasta' => $next, 'CbteFch' => date('Ymd'),
                                 'ImpTotal' => $total, 'ImpTotConc' => 0, 'ImpNeto' => $baseImp,
                                 'ImpOpEx' => 0, 'ImpIVA' => $iva, 'ImpTrib' => 0, 'MonId' => 'PES', 'MonCotiz' => 1,
@@ -335,8 +379,13 @@ class AfipService
                     'FeDetReq' => ['FECAEDetRequest' => [[
                         'Concepto' => 1, 'DocTipo' => 99, 'DocNro' => 0,
                         'CbteDesde' => $nextNC, 'CbteHasta' => $nextNC, 'CbteFch' => date('Ymd'),
-                        'ImpTotal' => $total, 'ImpNeto' => ($iva > 0 ? $neto : $total), 
-                        'ImpIVA' => $iva, 'MonId' => 'PES', 'MonCotiz' => 1,
+                        'ImpTotal' => $total, 
+                        'ImpTotConc' => 0, 
+                        'ImpNeto' => ($iva > 0 ? $neto : $total), 
+                        'ImpOpEx' => 0,    
+                        'ImpIVA' => $iva, 
+                        'ImpTrib' => 0,   
+                        'MonId' => 'PES', 'MonCotiz' => 1,
                         'Iva' => ['AlicIva' => [['Id' => ($iva > 0 ? 5 : 3), 'BaseImp' => ($iva > 0 ? $neto : $total), 'Importe' => $iva]]],
                         'CbtesAsoc' => ['CbteAsoc' => [['Tipo' => 6, 'PtoVta' => self::$PV, 'Nro' => (int) last(explode('-', $factura->number))]]]
                     ]]]

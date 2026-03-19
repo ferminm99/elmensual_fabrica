@@ -170,6 +170,22 @@
                 </table>
                 <div style="clear: both;"></div>
             </div>
+            <div style="margin-top: 20px; padding: 10px; border-top: 1pt solid #000;">
+                <table style="width: 100%; border: none;">
+                    <tr>
+                        <td style="width: 50%; border: none;">
+                            <br><br>
+                            ............................................................<br>
+                            <span style="font-size: 8px;">FIRMA Y ACLARACIÓN DEL RECEPTOR</span>
+                        </td>
+                        <td style="width: 50%; text-align: right; border: none;">
+                            <br><br>
+                            ............................................................<br>
+                            <span style="font-size: 8px;">D.N.I. / SELLO</span>
+                        </td>
+                    </tr>
+                </table>
+            </div>
         </div> <div class="footer-info">
             <div class="copy-type">{{ $copia['t'] }}</div>
             <div class="cae-section">

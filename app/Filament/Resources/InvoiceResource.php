@@ -6,6 +6,9 @@ use App\Filament\Resources\InvoiceResource\Pages;
 use App\Models\Invoice;
 use App\Services\AfipService;
 use Filament\Forms;
+use Filament\Forms\Get;
+use Filament\Forms\Set;
+use App\Models\Article;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Tables;
@@ -145,34 +148,71 @@ class InvoiceResource extends Resource
     public static function form(Form $form): Form
     {
         return $form->schema([
-            Forms\Components\Section::make('Datos del Cliente')->schema([
-                Forms\Components\Grid::make(2)->schema([
+            Forms\Components\Section::make('Tipo y Receptor')->schema([
+                Forms\Components\Grid::make(3)->schema([
+                    // Selector de Tipo: Factura o NC
+                    Forms\Components\Select::make('invoice_type')
+                        ->label('Tipo de Comprobante')
+                        ->options([
+                            'B' => 'Factura B',
+                            'NC' => 'Nota de Crédito B',
+                        ])
+                        ->default('B')
+                        ->required()
+                        ->native(false),
+
                     Forms\Components\Select::make('client_id')
                         ->label('Cliente Registrado')
                         ->relationship('client', 'name')
                         ->searchable()
-                        ->live(),
-                    Forms\Components\TextInput::make('manual_client_name')
-                        ->label('Nombre/Razón Social (Eventual)')
-                        ->visible(fn (Get $get) => !$get('client_id')),
-                    Forms\Components\TextInput::make('manual_client_cuit')
-                        ->label('DNI/CUIT (Eventual)')
-                        ->visible(fn (Get $get) => !$get('client_id')),
+                        ->live()
+                        ->placeholder('Cliente eventual...'),
+
+                    Forms\Components\Group::make()->schema([
+                        Forms\Components\TextInput::make('manual_client_name')
+                            ->label('Nombre / Razón Social')
+                            ->required(fn (Get $get) => !$get('client_id')),
+                        Forms\Components\TextInput::make('manual_client_tax_id')
+                            ->label('CUIT / DNI')
+                            ->placeholder('0 para Consumidor Final')
+                            ->required(fn (Get $get) => !$get('client_id')),
+                    ])->visible(fn (Get $get) => !$get('client_id'))->columnSpan(1),
                 ]),
             ]),
+
             Forms\Components\Section::make('Artículos')->schema([
                 Forms\Components\Repeater::make('items')
-                    ->schema([
-                        Forms\Components\Select::make('article_id')
-                            ->label('Artículo')
-                            ->options(\App\Models\Article::pluck('name', 'id'))
-                            ->required()->reactive()
-                            ->afterStateUpdated(fn ($state, Set $set) => 
-                                $set('unit_price', \App\Models\Article::find($state)?->price ?? 0)),
-                        Forms\Components\TextInput::make('quantity')->label('Cant.')->numeric()->default(1)->required(),
-                        Forms\Components\TextInput::make('unit_price')->label('Precio Unit.')->numeric()->prefix('$')->required(),
-                    ])->columns(3)->minItems(1)
-            ])
+                ->schema([
+                    Forms\Components\Select::make('article_id')
+                        ->label('Artículo')
+                        ->options(Article::pluck('name', 'id'))
+                        ->required()
+                        ->live() // Esto hace que el cambio sea instantáneo
+                        ->afterStateUpdated(function ($state, Set $set) {
+                            if ($state) {
+                                $article = Article::find($state);
+                                // USAMOS base_cost que es tu variable real
+                                $set('unit_price', $article?->base_cost ?? 0);
+                            }
+                        })
+                        ->columnSpan(2),
+
+                    Forms\Components\TextInput::make('quantity')
+                        ->label('Cant.')
+                        ->numeric()
+                        ->default(1)
+                        ->required(),
+
+                    Forms\Components\TextInput::make('unit_price')
+                        ->label('Precio Unit.')
+                        ->numeric()
+                        ->prefix('$')
+                        ->required()
+                        ->helperText('Se cargó el costo base, podés editarlo si querés.'),
+                ])
+                ->columns(4)
+                    ->minItems(1),
+            ]),
         ]);
     }
     
@@ -180,7 +220,7 @@ class InvoiceResource extends Resource
     {
         return [
             'index' => Pages\ListInvoices::route('/'),
-            // Deshabilitamos creación y edición manual para que no se rompa la lógica fiscal
+            'create' => Pages\CreateInvoice::route('/create'), // HABILITAR ESTO
         ];
     }
 }

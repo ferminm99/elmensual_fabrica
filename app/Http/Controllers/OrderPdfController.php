@@ -6,6 +6,7 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Invoice;
 use Illuminate\Http\Request;
+use SimpleSoftwareIO\QrCode\Facades\QrCode;
 use Barryvdh\DomPDF\Facade\Pdf;
 
 class OrderPdfController extends Controller
@@ -59,19 +60,55 @@ class OrderPdfController extends Controller
         // --- QR AFIP (Basado en la factura actual) ---
         $qrImage = null;
         if ($invoice->cae_afip) {
-            $letra = ($order->client->getAfipTaxConditionCode() === 1) ? 'A' : 'B';
+            // Importante: No usar Condición frente al IVA del cliente si fue un DNI/Consumidor final.
+            // El Invoice type ya tiene la letra correcta.
+            $letra = str_replace('NC ', '', $invoice->invoice_type); // Por si guardaste 'NC B' en vez de 'NC'
+            if ($letra === 'NC') $letra = 'B'; // Asumimos B por defecto si solo dice NC
+
             // 1=Factura A, 6=Factura B, 3=NC A, 8=NC B
-            $tipoCmp = ($invoice->invoice_type === 'NC') ? ($letra === 'A' ? 3 : 8) : ($letra === 'A' ? 1 : 6);
+            // Usamos directamente el tipo del Invoice si es posible, sino inferimos
+            $esA = ($order->client && $order->client->getAfipTaxConditionCode() === 1);
+            $tipoCmp = ($invoice->invoice_type === 'NC') ? ($esA ? 3 : 8) : ($esA ? 1 : 6);
             
+            // Detección de documento
+            $docTipo = 99; // Consumidor Final
+            $docNro = 0;
+            if ($order->client_id && $order->client->tax_id) {
+                $cuitLimpio = preg_replace('/[^0-9]/', '', $order->client->tax_id);
+                if (strlen($cuitLimpio) >= 8) {
+                    $docNro = (int) $cuitLimpio;
+                    $docTipo = strlen($cuitLimpio) > 8 ? 80 : 96; // 80=CUIT, 96=DNI
+                }
+            }
+
+            // Datos exactos requeridos por AFIP
             $qrData = [
-                "ver" => 1, "fecha" => $invoice->created_at->format('Y-m-d'), "cuit" => 30633784104,
-                "ptoVta" => 10, "tipoCmp" => $tipoCmp, "nroCmp" => (int) last(explode('-', $invoice->number)),
-                "importe" => (float) abs($invoice->total_fiscal), "moneda" => "PES", "ctz" => 1,
-                "tipoDocRec" => ($letra === 'A' ? 80 : 99), "nroDocRec" => ($letra === 'A' ? (int) $order->client->tax_id : 0),
-                "tipoCodAut" => "E", "codAut" => (int) $invoice->cae_afip
+                "ver" => 1,
+                "fecha" => $invoice->created_at->format('Y-m-d'),
+                "cuit" => 30633784104, // Tu CUIT emisor
+                "ptoVta" => 10,
+                "tipoCmp" => $tipoCmp,
+                "nroCmp" => (int) last(explode('-', $invoice->number)),
+                "importe" => (float) abs($invoice->total_fiscal),
+                "moneda" => "PES",
+                "ctz" => 1,
+                "tipoDocRec" => $docTipo,
+                "nroDocRec" => $docNro,
+                "tipoCodAut" => "E",
+                "codAut" => (int) $invoice->cae_afip
             ];
-            $payload = base64_encode(json_encode($qrData));
-            $qrImage = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" . urlencode("https://www.afip.gob.ar/fe/qr/?p=" . $payload);
+
+            // 1. JSON Encode
+            $jsonAfip = json_encode($qrData);
+            // 2. Base64 Encode
+            $base64Afip = base64_encode($jsonAfip);
+            // 3. URL Final
+            $urlAfip = "https://www.afip.gob.ar/fe/qr/?p=" . $base64Afip;
+
+            // 4. Generamos el SVG localmente y lo pasamos a base64 para embeber en el DOMPDF
+            // Requiere: use SimpleSoftwareIO\QrCode\Facades\QrCode; al principio del archivo
+            $qrSvg = \SimpleSoftwareIO\QrCode\Facades\QrCode::format('svg')->size(130)->margin(0)->generate($urlAfip);
+            $qrImage = base64_encode($qrSvg);
         }
 
         return Pdf::loadView('pdf.factura', compact('order', 'invoice', 'itemsParaPdf', 'qrImage'))->stream();

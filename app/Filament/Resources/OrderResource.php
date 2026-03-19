@@ -358,75 +358,47 @@ class OrderResource extends Resource
                     ->color('success')
                     ->button()
                     ->modalWidth('7xl')
-                    // --- CANDADO INTELIGENTE ---
                     ->visible(function (Order $record) {
-                        // 1. Nunca mostrar en los hijos, solo en el Padre
                         if (!is_null($record->parent_id)) return false;
-
                         $status = $record->status instanceof \BackedEnum ? $record->status->value : $record->status;
-
-                        // 2. Solo habilitado si el estado actual es Assembled o Standby
                         if (!in_array($status, ['assembled', 'standby'])) return false;
-
-                        // 3. REGLA CRÍTICA: Si tiene hijos, no dejar facturar hasta que TODOS estén armados.
                         $hijosSinArmar = $record->children()->whereIn('status', ['draft', 'processing'])->exists();
-                        if ($hijosSinArmar) {
-                            return false; 
-                        }
-
-                        return true;
+                        return !$hijosSinArmar;
                     })
-                    // ---------------------------
                     ->action(function (Order $record, array $data) {
-                        // --- 1. CHEQUEO DE PARIDAD PARA MIXTO ---
-                        $orderIds = \App\Models\Order::where('id', $record->id)->orWhere('parent_id', $record->id)->pluck('id')->toArray();
-                        $itemsConsolidados = \App\Models\OrderItem::whereIn('order_id', $orderIds)->get();
+                        $orderIds = Order::where('id', $record->id)->orWhere('parent_id', $record->id)->pluck('id')->toArray();
+                        $itemsConsolidados = OrderItem::whereIn('order_id', $orderIds)->get();
                         
-                        $totalPrendas = $itemsConsolidados->sum(function($i) {
-                            return $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity;
-                        });
+                        $totalPrendas = $itemsConsolidados->sum(fn($i) => $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity);
 
                         if ($data['billing_type'] === 'mixed' && $totalPrendas % 2 !== 0) {
-                            Notification::make()->danger()->title('Cantidad Impar')->body("No podés hacer 50/50 con {$totalPrendas} prendas. Agregá o quitá una para que sea par.")->persistent()->send();
+                            Notification::make()->danger()->title('Cantidad Impar')->body("No podés hacer 50/50 con {$totalPrendas} prendas. Debe ser par.")->send();
                             return;
                         }
 
-                        // --- 2. LÓGICA DE ANULACIÓN DE FACTURA VIEJA ---
-                        $facturaVieja = $record->invoices()->where('invoice_type', 'B')->latest()->first();
+                        // Anulamos factura vieja si existía una A o B
+                        $facturaVieja = $record->invoices()->whereIn('invoice_type', ['A', 'B'])->latest()->first();
                         $estaAnulada = $facturaVieja ? $record->invoices()->where('invoice_type', 'NC')->where('parent_id', $facturaVieja->id)->exists() : false;
 
                         if ($facturaVieja && !$estaAnulada) {
-                            Notification::make()->warning()->title("Generando Nota de Crédito...")->body("Anulando factura previa para actualizar importes.")->send();
-                            
-                            $resNC = \App\Services\AfipService::anular($record);
-                            
-                            if (!$resNC['success']) {
-                                Notification::make()->danger()->title("Error al generar NC")->body($resNC['error'])->send();
-                                return;
-                            }
+                            \App\Services\AfipService::anular($record);
                         }
 
-                        // --- 3. FACTURAR TODO JUNTO NUEVAMENTE ---
                         $record->update(['billing_type' => $data['billing_type']]);
                         
-                        // Si es informal (100% negro), no llamamos a AFIP
                         if ($data['billing_type'] === 'informal') {
                             $record->update(['status' => OrderStatus::Checked, 'invoiced_at' => now()]);
                             $record->children()->update(['status' => OrderStatus::Checked]);
-                            Notification::make()->success()->title("Pedido verificado internamente (100% Negro)")->send();
+                            Notification::make()->success()->title("Pedido verificado internamente")->send();
                             return;
                         }
 
                         $response = \App\Services\AfipService::facturar($record, $data);
 
                         if ($response['success']) {
-                            $record->update([
-                                'status' => OrderStatus::Checked,
-                                'invoice_number' => $data['invoice_number'] ?? null,
-                                'invoiced_at' => now(),
-                            ]);
+                            $record->update(['status' => OrderStatus::Checked, 'invoiced_at' => now()]);
                             $record->children()->update(['status' => OrderStatus::Checked]);
-                            Notification::make()->success()->title("Facturación completada exitosamente")->send();
+                            Notification::make()->success()->title("Facturación exitosa")->send();
                         } else {
                             Notification::make()->danger()->title('Error AFIP')->body($response['error'])->send();
                         }
@@ -496,25 +468,37 @@ class OrderResource extends Resource
                         ";
                         
                         return [
-                            Forms\Components\Placeholder::make('resumen_carga')
-                                ->label('')
-                                ->content(new HtmlString($resumenHtml)),
+                            Forms\Components\Placeholder::make('resumen_carga')->label('')->content(new HtmlString($resumenHtml)),
 
                             Forms\Components\Section::make('Configuración de Cobro')->schema([
-                                Forms\Components\Grid::make(2)->schema([
+                                Forms\Components\Grid::make(3)->schema([
                                     Forms\Components\Select::make('billing_type')
-                                        ->label('Tipo de Facturación')
+                                        ->label('Tipo Venta')
                                         ->options(['fiscal' => 'Fiscal (100% Blanco)', 'informal' => 'Interno (100% Negro)', 'mixed' => 'Mixto (50/50)'])
-                                        ->default($record->billing_type ?? 'mixed')
-                                        ->required(),
-                                        
+                                        ->default($record->billing_type ?? 'mixed')->required(),
+                                    
                                     Forms\Components\Select::make('payment_method')
-                                        ->label('Método de Pago')
+                                        ->label('Método Pago')
                                         ->options(['cta_cte' => 'Cta Cte', 'efectivo' => 'Efectivo', 'transferencia' => 'Transferencia', 'cheque' => 'Cheque'])
-                                        ->default($record->client->last_payment_method ?? 'cta_cte')
-                                        ->required()->live(),
+                                        ->default($record->client->last_payment_method ?? 'cta_cte')->required()->live(),
+
+                                    Forms\Components\Select::make('alt_voucher_type')
+                                        ->label('Tipo Comprobante')
+                                        ->options(['1' => 'Factura A', '6' => 'Factura B'])
+                                        ->default('1') // "La mayoría serán Tipo A"
+                                        ->required(),
                                 ]),
-                                
+                            ]),
+
+                            Forms\Components\Section::make('Facturar a otro CUIT/Nombre (Opcional)')
+                                ->description('Completar solo si la factura NO es a nombre del cliente del pedido.')
+                                ->collapsed()
+                                ->schema([
+                                    Forms\Components\Grid::make(2)->schema([
+                                        Forms\Components\TextInput::make('alt_name')->label('Nombre / Razón Social Alt.'),
+                                        Forms\Components\TextInput::make('alt_tax_id')->label('CUIT / DNI Alt.')->numeric(),
+                                    ]),
+                                ]),
                                 Forms\Components\Grid::make(2)->schema([
                                     Forms\Components\TextInput::make('bank_name')->label('Banco Origen')->placeholder('Ej: Galicia / MP')
                                         ->visible(fn (Get $get) => in_array($get('payment_method'), ['transferencia', 'cheque']))
@@ -529,7 +513,6 @@ class OrderResource extends Resource
                                         ->visible(fn (Get $get) => $get('payment_method') === 'cheque')
                                         ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
                                 ]),
-                            ]),
                         ];
                     }),
                 // CHECKED -> DISPATCHED (Despachar)
