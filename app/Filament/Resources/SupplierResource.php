@@ -7,6 +7,8 @@ use App\Filament\Resources\ProductionOrderResource\RelationManagers\ActivitiesRe
 use App\Models\Supplier;
 use App\Models\CompanyAccount;
 use App\Models\Transaction;
+use Filament\Forms\Get;
+use Filament\Forms\Set;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -102,86 +104,188 @@ class SupplierResource extends Resource
             ])
             ->actions([
                 Tables\Actions\EditAction::make(),
-
-                // --- BOTÓN PAGAR (SALIDA DE DINERO) ---
-                Tables\Actions\Action::make('register_payment')
-                    ->label('Pagar') // Diferencia clave: Acá PAGAMOS
-                    ->icon('heroicon-o-credit-card')
-                    ->color('danger') // Rojo porque sale plata
-                    ->modalWidth('2xl')
+                // --- BOTÓN 1: CARGAR FACTURA DE COMPRA (INGRESAR DEUDA) ---
+                Tables\Actions\Action::make('cargar_factura')
+                    ->label('Cargar Factura')
+                    ->icon('heroicon-o-document-plus')
+                    ->color('warning')
+                    ->modalWidth('4xl')
                     ->form([
-                        Forms\Components\Section::make('Estrategia de Pago')
-                            ->schema([
+                        Forms\Components\Section::make('Datos del Comprobante')->schema([
+                            Forms\Components\Grid::make(3)->schema([
+                                Forms\Components\Select::make('tipo_comprobante')
+                                    ->label('Tipo')
+                                    ->options([
+                                        'Factura A' => 'Factura A',
+                                        'Factura B' => 'Factura B',
+                                        'Factura C' => 'Factura C',
+                                        'Ticket' => 'Remito / Interno (Negro)',
+                                    ])
+                                    ->default('Factura A')
+                                    ->required()
+                                    ->live(),
+
+                                Forms\Components\TextInput::make('numero')
+                                    ->label('Pto Vta - Número')
+                                    ->placeholder('Ej: 0001-00001234')
+                                    ->required(),
+
+                                Forms\Components\DatePicker::make('fecha_emision')
+                                    ->label('Fecha de Emisión')
+                                    ->default(now())
+                                    ->required(),
+                            ]),
+                        ]),
+
+                        Forms\Components\Section::make('Importes')->schema([
+                            Forms\Components\Grid::make(3)->schema([
+                                Forms\Components\TextInput::make('neto_gravado')
+                                    ->label('Neto Gravado')
+                                    ->numeric()
+                                    ->prefix('$')
+                                    ->default(0)
+                                    ->live(onBlur: true)
+                                    ->afterStateUpdated(function (Get $get, Set $set, $state) {
+                                        if ($get('tipo_comprobante') === 'Factura A') {
+                                            $set('iva', round((float)$state * 0.21, 2));
+                                            $set('total', round((float)$state * 1.21, 2));
+                                        } else {
+                                            $set('iva', 0);
+                                            $set('total', (float)$state);
+                                        }
+                                    }),
+
+                                Forms\Components\TextInput::make('iva')
+                                    ->label('I.V.A. (21%)')
+                                    ->numeric()
+                                    ->prefix('$')
+                                    ->default(0)
+                                    ->live(onBlur: true)
+                                    ->afterStateUpdated(function (Get $get, Set $set, $state) {
+                                         $neto = (float)$get('neto_gravado');
+                                         $set('total', $neto + (float)$state);
+                                    })
+                                    ->visible(fn (Get $get) => in_array($get('tipo_comprobante'), ['Factura A'])),
+
+                                Forms\Components\TextInput::make('total')
+                                    ->label('TOTAL FINAL')
+                                    ->numeric()
+                                    ->prefix('$')
+                                    ->required()
+                                    ->helperText('Importe total del comprobante.'),
+                            ]),
+                        ]),
+                    ])
+                    ->action(function (array $data, Supplier $record) {
+                        $isFiscal = in_array($data['tipo_comprobante'], ['Factura A', 'Factura B', 'Factura C']);
+                        $amount = (float) $data['total'];
+
+                        DB::transaction(function () use ($data, $record, $isFiscal, $amount) {
+                            // 1. Aumentamos la deuda con el proveedor
+                            if ($isFiscal) {
+                                $record->increment('account_balance_fiscal', $amount);
+                            } else {
+                                $record->increment('account_balance_internal', $amount);
+                            }
+
+                            // 2. Registramos el "gasto" para auditoría (Sin tocar bancos todavía)
+                            Transaction::create([
+                                'supplier_id' => $record->id, // Asumiendo que agregaste supplier_id a Transactions
+                                'type' => 'Purchase', // Podrías usar 'Expense' si no querés crear un Enum nuevo
+                                'amount' => $amount,
+                                'description' => "Compra: {$data['tipo_comprobante']} {$data['numero']}",
+                                'concept' => 'Mercadería / Insumos',
+                                'origin' => $isFiscal ? 'Fiscal' : 'Internal',
+                            ]);
+                        });
+
+                        Notification::make()->success()->title('Factura cargada. Saldo actualizado.')->send();
+                    }),
+
+                // --- BOTÓN 2: PAGAR (SALIDA DE DINERO REAL) ---
+                Tables\Actions\Action::make('register_payment')
+                    ->label('Pagar')
+                    ->icon('heroicon-o-banknotes')
+                    ->color('danger')
+                    ->modalWidth('3xl')
+                    ->form([
+                        Forms\Components\Section::make('Detalle del Pago')->schema([
+                            Forms\Components\Grid::make(3)->schema([
                                 Forms\Components\TextInput::make('amount')
                                     ->label('Monto a Pagar')
                                     ->numeric()
                                     ->prefix('$')
-                                    ->required(),
+                                    ->required()
+                                    ->columnSpan(2),
                                 
                                 Forms\Components\Select::make('split_strategy')
-                                    ->label('Imputación')
+                                    ->label('Imputar a:')
                                     ->options([
-                                        'fiscal_100' => '100% Fiscal (Blanco)',
-                                        'split_50_50' => 'Mix 50% / 50%',
-                                        'internal_100' => '100% Interno (Negro)',
+                                        'fiscal_100' => 'Deuda Blanca (Fiscal)',
+                                        'internal_100' => 'Deuda Negra (Interna)',
+                                        'split_50_50' => 'Mitad y Mitad',
                                     ])
                                     ->default('fiscal_100')
                                     ->required(),
-                            ])->columns(2),
+                            ]),
+                        ]),
 
-                        Forms\Components\Section::make('Egreso de Tesorería')
-                            ->schema([
+                        Forms\Components\Section::make('Egreso de Tesorería')->schema([
+                            Forms\Components\Grid::make(2)->schema([
+                                Forms\Components\Select::make('company_account_id')
+                                    ->label('Cuenta Origen')
+                                    ->options(CompanyAccount::all()->mapWithKeys(function ($acc) {
+                                        return [$acc->id => "{$acc->name} (Saldo: $ " . number_format($acc->current_balance, 0, ',', '.') . ")"];
+                                    }))
+                                    ->required(),
+
                                 Forms\Components\Select::make('payment_method')
                                     ->label('Forma de Pago')
                                     ->options([
-                                        'cash' => 'Efectivo',
-                                        'transfer' => 'Transferencia Bancaria',
-                                        // Aquí podríamos agregar "Cheque Propio" en el futuro
+                                        'transferencia' => 'Transferencia',
+                                        'efectivo' => 'Efectivo',
+                                        'cheque' => 'Cheque',
                                     ])
-                                    ->reactive()
+                                    ->default('transferencia')
                                     ->required(),
-
-                                Forms\Components\Select::make('company_account_id')
-                                    ->label('¿De qué cuenta sale el dinero?')
-                                    ->options(CompanyAccount::all()->pluck('name', 'id'))
-                                    ->required(),
-                                
-                                Forms\Components\Textarea::make('notes')
-                                    ->label('Observaciones')
-                                    ->placeholder('Ej: Pago factura 001...'),
                             ]),
+                            Forms\Components\Textarea::make('notes')
+                                ->label('Observaciones / Comprobante de pago')
+                                ->placeholder('Ej: Transferencia Banco Provincia Nro 99123'),
+                        ]),
                     ])
                     ->action(function (array $data, Supplier $record) {
-                        $amount = $data['amount'];
+                        $amount = (float) $data['amount'];
                         $strategy = $data['split_strategy'];
 
-                        // 1. Descontar nuestra deuda (Al pagar, la deuda BAJA)
-                        $fiscalPart = 0; $internalPart = 0;
+                        DB::transaction(function () use ($data, $record, $amount, $strategy) {
+                            // 1. Bajamos la deuda
+                            $fiscalPart = 0; $internalPart = 0;
+                            if ($strategy === 'fiscal_100') $fiscalPart = $amount;
+                            elseif ($strategy === 'internal_100') $internalPart = $amount;
+                            else { $fiscalPart = $amount / 2; $internalPart = $amount / 2; }
 
-                        if ($strategy === 'fiscal_100') $fiscalPart = $amount;
-                        elseif ($strategy === 'internal_100') $internalPart = $amount;
-                        else { $fiscalPart = $amount / 2; $internalPart = $amount / 2; }
+                            if ($fiscalPart > 0) $record->decrement('account_balance_fiscal', $fiscalPart);
+                            if ($internalPart > 0) $record->decrement('account_balance_internal', $internalPart);
 
-                        if ($fiscalPart > 0) $record->decrement('account_balance_fiscal', $fiscalPart);
-                        if ($internalPart > 0) $record->decrement('account_balance_internal', $internalPart);
+                            // 2. Sacamos plata del Banco/Caja
+                            $account = CompanyAccount::findOrFail($data['company_account_id']);
+                            $account->decrement('current_balance', $amount);
 
-                        // 2. Registrar Salida de Dinero (Transaction)
-                        $account = CompanyAccount::find($data['company_account_id']);
-                        
-                        Transaction::create([
-                            'company_account_id' => $account->id,
-                            'type' => 'Expense', // <--- IMPORTANTE: Es Gasto (Egreso)
-                            'amount' => $amount,
-                            'description' => "Pago a {$record->name}",
-                            'concept' => "Pago Proveedores",
-                            'origin' => $strategy === 'internal_100' ? 'Internal' : 'Fiscal',
-                            'payment_details' => ['method' => $data['payment_method'], 'notes' => $data['notes']],
-                        ]);
+                            // 3. Registramos el movimiento en el Banco
+                            Transaction::create([
+                                'company_account_id' => $account->id,
+                                'supplier_id' => $record->id,
+                                'type' => 'Expense', // Egreso de dinero
+                                'amount' => $amount,
+                                'description' => "Pago a Proveedor: {$record->name}",
+                                'concept' => 'Pago Proveedores',
+                                'origin' => $strategy === 'internal_100' ? 'Internal' : 'Fiscal',
+                                'payment_details' => ['method' => $data['payment_method'], 'notes' => $data['notes']],
+                            ]);
+                        });
 
-                        // Restamos plata de la caja/banco
-                        $account->decrement('current_balance', $amount);
-
-                        Notification::make()->title('Pago registrado')->success()->send();
+                        Notification::make()->success()->title('Pago registrado')->body('El saldo del banco y la deuda se actualizaron.')->send();
                     }),
             ]);
     }

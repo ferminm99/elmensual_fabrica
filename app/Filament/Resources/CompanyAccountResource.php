@@ -9,6 +9,12 @@ use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
+use Filament\Forms\Get;
+use Filament\Forms\Set;
+use Illuminate\Support\Facades\DB;
+use App\Models\BankStatement;
+use App\Models\BankStatementRow;
+use App\Models\Client;
 
 class CompanyAccountResource extends Resource
 {
@@ -85,6 +91,61 @@ class CompanyAccountResource extends Resource
             ])
             ->actions([
                 Tables\Actions\EditAction::make(),
+                Tables\Actions\Action::make('importar_csv')
+                    ->label('Subir Extracto')
+                    ->icon('heroicon-o-arrow-up-tray')
+                    ->color('success')
+                    ->form([
+                        Forms\Components\DatePicker::make('statement_date')
+                            ->label('Fecha del Extracto')
+                            ->default(now())
+                            ->required(),
+                        Forms\Components\FileUpload::make('csv_file')
+                            ->label('Archivo CSV')
+                            ->acceptedFileTypes(['text/csv', 'text/plain', 'application/csv'])
+                            ->storeFiles(false) // No lo guarda en disco, lo lee al vuelo
+                            ->required()
+                            ->helperText('El Excel guardado como CSV. Orden de columnas: 1:Fecha(YYYY-MM-DD), 2:Concepto, 3:Referencia, 4:CUIT, 5:Nombre, 6:Monto'),
+                    ])
+                    ->action(function (\App\Models\CompanyAccount $record, array $data) {
+                        $file = $data['csv_file'];
+                        $path = $file->getRealPath();
+                        $handle = fopen($path, 'r');
+                        
+                        $statement = BankStatement::create([
+                            'company_account_id' => $record->id,
+                            'statement_date' => $data['statement_date'],
+                            'status' => 'pending'
+                        ]);
+
+                        fgetcsv($handle); // Saltear la fila de los títulos (cabecera)
+                        
+                        $count = 0;
+                        while (($row = fgetcsv($handle, 1000, ',')) !== false) {
+                            // A veces el CSV viene separado por punto y coma. Si te pasa, cambiá el ',' por ';' arriba.
+                            if (count($row) < 6) continue;
+                            
+                            // Magia 1: Limpiamos el CUIT para que sea solo números
+                            $cuitLimpio = preg_replace('/[^0-9]/', '', $row[3]);
+                            
+                            // Magia 2: Buscamos si ese CUIT ya lo tenemos guardado
+                            $client = Client::where('tax_id', 'LIKE', "%{$cuitLimpio}%")->first();
+
+                            BankStatementRow::create([
+                                'bank_statement_id' => $statement->id,
+                                'date' => $row[0],
+                                'concept' => $row[1],
+                                'reference' => $row[2],
+                                'cuit_origin' => $row[3],
+                                'name_origin' => $row[4],
+                                'amount' => (float) $row[5],
+                                'client_id' => $client?->id, // ¡Si lo encontró, lo vincula solo!
+                            ]);
+                            $count++;
+                        }
+                        fclose($handle);
+                        \Filament\Notifications\Notification::make()->success()->title("Extracto importado: {$count} movimientos")->send();
+                    }),
             ]);
     }
 
