@@ -5,6 +5,7 @@ use App\Enums\OrderStatus;
 use App\Filament\Resources\OrderResource\Pages;
 use App\Models\Article;
 use App\Models\Order;
+use App\Models\OrderItem;
 use App\Models\Sku;
 use App\Models\Client;
 use App\Models\Zone;
@@ -41,22 +42,25 @@ class OrderResource extends Resource
                                 ->relationship('client', 'name')
                                 ->searchable()
                                 ->required()
-                                ->disabled(function (Get $get) {
-                                    $status = $get('status');
-                                    $val = $status instanceof \BackedEnum ? $status->value : $status;
-                                    return $val !== 'draft';
-                                }),
-
+                                ->disabled(function (?Order $record) {
+                                    // Si no hay registro (estamos creando), NO deshabilitar
+                                    if (!$record) return false; 
+                                    $status = $record->status instanceof \BackedEnum ? $record->status->value : $record->status;
+                                    return $status !== 'draft';
+                                })
+                                ->dehydrated(),
+                                
                             Forms\Components\Select::make('billing_type')
                                 ->label('Facturación')
                                 ->options(['fiscal' => 'Fiscal', 'informal' => 'Interno', 'mixed' => 'Mixto'])
                                 ->default('fiscal')
                                 ->required()
-                                ->disabled(function (Get $get) {
-                                    $status = $get('status');
-                                    $val = $status instanceof \BackedEnum ? $status->value : $status;
-                                    return !in_array($val, ['draft', 'processing', 'standby']);
-                                }),
+                                ->disabled(function (?Order $record) {
+                                    if (!$record) return false;
+                                    $status = $record->status instanceof \BackedEnum ? $record->status->value : $record->status;
+                                    return !in_array($status, ['draft', 'processing', 'standby']);
+                                })
+                                ->dehydrated(),
                            
                             Forms\Components\Select::make('status')
                                 ->options(OrderStatus::class)
@@ -475,44 +479,51 @@ class OrderResource extends Resource
                                     Forms\Components\Select::make('billing_type')
                                         ->label('Tipo Venta')
                                         ->options(['fiscal' => 'Fiscal (100% Blanco)', 'informal' => 'Interno (100% Negro)', 'mixed' => 'Mixto (50/50)'])
-                                        ->default($record->billing_type ?? 'mixed')->required(),
+                                        ->default($record->billing_type ?? 'mixed')
+                                        ->live() // <--- CLAVE: Para que la pantalla reaccione en vivo
+                                        ->required(),
                                     
                                     Forms\Components\Select::make('payment_method')
                                         ->label('Método Pago')
                                         ->options(['cta_cte' => 'Cta Cte', 'efectivo' => 'Efectivo', 'transferencia' => 'Transferencia', 'cheque' => 'Cheque'])
                                         ->default($record->client->last_payment_method ?? 'cta_cte')->required()->live(),
 
+                                    // ESTE CAMPO AHORA SE OCULTA SI ES NEGRO
                                     Forms\Components\Select::make('alt_voucher_type')
                                         ->label('Tipo Comprobante')
                                         ->options(['1' => 'Factura A', '6' => 'Factura B'])
-                                        ->default('1') // "La mayoría serán Tipo A"
-                                        ->required(),
+                                        ->default('1') 
+                                        ->required(fn (Get $get) => $get('billing_type') !== 'informal')
+                                        ->visible(fn (Get $get) => $get('billing_type') !== 'informal'),
                                 ]),
                             ]),
 
+                            // ESTA SECCIÓN AHORA SE OCULTA SI ES NEGRO
                             Forms\Components\Section::make('Facturar a otro CUIT/Nombre (Opcional)')
                                 ->description('Completar solo si la factura NO es a nombre del cliente del pedido.')
                                 ->collapsed()
+                                ->visible(fn (Get $get) => $get('billing_type') !== 'informal') // <--- OCULTAR
                                 ->schema([
                                     Forms\Components\Grid::make(2)->schema([
                                         Forms\Components\TextInput::make('alt_name')->label('Nombre / Razón Social Alt.'),
                                         Forms\Components\TextInput::make('alt_tax_id')->label('CUIT / DNI Alt.')->numeric(),
                                     ]),
                                 ]),
-                                Forms\Components\Grid::make(2)->schema([
-                                    Forms\Components\TextInput::make('bank_name')->label('Banco Origen')->placeholder('Ej: Galicia / MP')
-                                        ->visible(fn (Get $get) => in_array($get('payment_method'), ['transferencia', 'cheque']))
-                                        ->required(fn (Get $get) => in_array($get('payment_method'), ['transferencia', 'cheque'])),
-                                    Forms\Components\TextInput::make('transaction_id')->label('Nro. Referencia')
-                                        ->visible(fn (Get $get) => $get('payment_method') === 'transferencia')
-                                        ->required(fn (Get $get) => $get('payment_method') === 'transferencia'),
-                                    Forms\Components\TextInput::make('check_number')->label('Nro. Cheque')
-                                        ->visible(fn (Get $get) => $get('payment_method') === 'cheque')
-                                        ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
-                                    Forms\Components\DatePicker::make('due_date')->label('Vencimiento Cheque')
-                                        ->visible(fn (Get $get) => $get('payment_method') === 'cheque')
-                                        ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
-                                ]),
+                                
+                            Forms\Components\Grid::make(2)->schema([
+                                Forms\Components\TextInput::make('bank_name')->label('Banco Origen')->placeholder('Ej: Galicia / MP')
+                                    ->visible(fn (Get $get) => in_array($get('payment_method'), ['transferencia', 'cheque']))
+                                    ->required(fn (Get $get) => in_array($get('payment_method'), ['transferencia', 'cheque'])),
+                                Forms\Components\TextInput::make('transaction_id')->label('Nro. Referencia')
+                                    ->visible(fn (Get $get) => $get('payment_method') === 'transferencia')
+                                    ->required(fn (Get $get) => $get('payment_method') === 'transferencia'),
+                                Forms\Components\TextInput::make('check_number')->label('Nro. Cheque')
+                                    ->visible(fn (Get $get) => $get('payment_method') === 'cheque')
+                                    ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
+                                Forms\Components\DatePicker::make('due_date')->label('Vencimiento Cheque')
+                                    ->visible(fn (Get $get) => $get('payment_method') === 'cheque')
+                                    ->required(fn (Get $get) => $get('payment_method') === 'cheque'),
+                            ]),
                         ];
                     }),
                 // CHECKED -> DISPATCHED (Despachar)
@@ -544,46 +555,48 @@ class OrderResource extends Resource
                 // ==========================================
                 // EL NUEVO HUB DE IMPRESIÓN (FASE 6)
                 // ==========================================
-                Tables\Actions\ActionGroup::make([
+            Tables\Actions\ActionGroup::make([
                     
-                    // 1. REMITOS (NO SALE EN INFORMAL)
+                    // 1. REMITOS (Logística)
                     Tables\Actions\Action::make('print_remitos')
                         ->label('Remitos (x3)')
                         ->icon('heroicon-o-document-duplicate')
                         ->color('gray')
                         ->visible(fn (Order $record) => 
-                            $record->billing_type !== 'informal' && // REGLA: El 100% informal NO lleva remito
+                            // REGLA: Sale en Blanco o Mixto, NUNCA en 100% Negro
+                            $record->billing_type !== 'informal' && 
                             in_array($record->status instanceof \BackedEnum ? $record->status->value : $record->status, ['checked', 'dispatched', 'paid']) && 
                             is_null($record->parent_id)
                         )
                         ->url(fn (Order $record) => url('/admin/orders/'.$record->id.'/remito'))
                         ->openUrlInNewTab(),
-                    // PRESUPUESTO :
+
+                    // 2. PRESUPUESTO (BOLETA INTERNA "X") - ESTO ES LO QUE CORREGIMOS
                     Tables\Actions\Action::make('print_presupuesto')
                         ->label('Boleta Interna (X)')
                         ->icon('heroicon-o-document-currency-dollar')
                         ->color('warning')
                         ->visible(fn (Order $record) => 
-                            in_array($record->billing_type, ['informal', 'mixed']) && 
-                            in_array($record->status->value ?? $record->status, ['checked', 'dispatched', 'paid']) && 
+                            // REGLA: ¡SALE SIEMPRE! No importa si es fiscal, mixto o negro.
+                            // Si el pedido ya está cerrado (checked, despachado, pagado), se puede imprimir.
+                            in_array($record->status instanceof \BackedEnum ? $record->status->value : $record->status, ['checked', 'dispatched', 'paid']) && 
                             is_null($record->parent_id)
                         )
                         ->url(fn (Order $record) => url('/admin/orders/'.$record->id.'/presupuesto'))
                         ->openUrlInNewTab(),
 
-                    // 2. FACTURA AFIP (Inteligente para múltiples facturas)
+                    // 3. FACTURA AFIP (Solo si existe en la BD)
                     Tables\Actions\Action::make('descargar_factura')
                         ->label('Facturas AFIP')
                         ->icon('heroicon-o-document-text')
                         ->color('success')
                         ->visible(fn (Order $record) => $record->invoices()->where('invoice_type', 'B')->exists() && is_null($record->parent_id))
-                        // Si solo hay una, abrimos directo. Si hay varias, Filament muestra el selector.
                         ->url(function (Order $record) {
                             $invoices = $record->invoices()->where('invoice_type', 'B')->get();
                             if ($invoices->count() === 1) {
                                 return route('order.invoice.download', ['order' => $record->id, 'type' => 'B', 'invoice_id' => $invoices->first()->id]);
                             }
-                            return null; // Si devuelve null, se ejecuta el form/action de abajo
+                            return null;
                         })
                         ->openUrlInNewTab()
                         ->form(function (Order $record) {

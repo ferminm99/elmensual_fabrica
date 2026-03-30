@@ -77,6 +77,54 @@ class BankStatementRowResource extends Resource
                     ])
                     ->action(fn($record, $data) => $record->update(['client_id' => $data['client_id']])),
                     
+                // Botón para CREAR cliente si no existe en la base
+                Tables\Actions\Action::make('crear_cliente')
+                    ->label('Crear Cliente')
+                    ->icon('heroicon-o-user-plus')
+                    ->color('info')
+                    ->visible(fn($record) => $record->status === 'pending' && !$record->client_id && $record->amount > 0)
+                    ->form([
+                        Forms\Components\TextInput::make('name')
+                            ->label('Nombre / Razón Social')
+                            ->default(fn($record) => $record->name_origin) // Autocompleta con el nombre que tiró el banco
+                            ->required(),
+                        
+                        Forms\Components\TextInput::make('tax_id')
+                            ->label('CUIT / DNI')
+                            ->default(fn($record) => preg_replace('/[^0-9]/', '', $record->cuit_origin)) // Autocompleta el CUIT del banco
+                            ->numeric(),
+
+                        Forms\Components\Select::make('tax_condition')
+                            ->label('Condición IVA')
+                            ->options([
+                                'Consumidor Final' => 'Consumidor Final',
+                                'Responsable Inscripto' => 'Responsable Inscripto',
+                                'Monotributo' => 'Monotributo',
+                                'Exento' => 'Exento',
+                            ])
+                            ->default('Consumidor Final')
+                            ->required(),
+                    ])
+                    ->action(function($record, array $data) {
+                        // Creamos el cliente en la base de datos
+                        $nuevoCliente = \App\Models\Client::create([
+                            'name' => strtoupper($data['name']),
+                            'tax_id' => $data['tax_id'],
+                            'tax_condition' => $data['tax_condition'],
+                            // Como lo creamos rápido, le ponemos saldo 0
+                            'fiscal_debt' => 0,
+                            'internal_debt' => 0,
+                        ]);
+                        
+                        // Lo vinculamos automáticamente a esta fila del banco
+                        $record->update(['client_id' => $nuevoCliente->id]);
+                        
+                        \Filament\Notifications\Notification::make()
+                            ->success()
+                            ->title('Cliente Creado')
+                            ->body('Ahora podés aprobar su pago.')
+                            ->send();
+                    }),    
                 // Botón de Impacto Real
                 Tables\Actions\Action::make('aprobar')
                     ->label('Aprobar Cobro')
