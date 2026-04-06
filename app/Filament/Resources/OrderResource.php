@@ -5,7 +5,7 @@ use App\Enums\OrderStatus;
 use App\Filament\Resources\OrderResource\Pages;
 use App\Models\Article;
 use App\Models\Order;
-use App\Models\OrderItem;
+use App\Models\OrderItem; // <--- AGREGADO PARA EVITAR EL ERROR AL FACTURAR
 use App\Models\Sku;
 use App\Models\Client;
 use App\Models\Zone;
@@ -43,18 +43,18 @@ class OrderResource extends Resource
                                 ->searchable()
                                 ->required()
                                 ->disabled(function (?Order $record) {
-                                    // Si no hay registro (estamos creando), NO deshabilitar
                                     if (!$record) return false; 
                                     $status = $record->status instanceof \BackedEnum ? $record->status->value : $record->status;
                                     return $status !== 'draft';
                                 })
                                 ->dehydrated(),
-                                
+
                             Forms\Components\Select::make('billing_type')
                                 ->label('Facturación')
                                 ->options(['fiscal' => 'Fiscal', 'informal' => 'Interno', 'mixed' => 'Mixto'])
                                 ->default('fiscal')
                                 ->required()
+                                ->native(false) // <--- Agregado para que reaccione al instante (si lo usás con dependencias acá)
                                 ->disabled(function (?Order $record) {
                                     if (!$record) return false;
                                     $status = $record->status instanceof \BackedEnum ? $record->status->value : $record->status;
@@ -65,7 +65,8 @@ class OrderResource extends Resource
                             Forms\Components\Select::make('status')
                                 ->options(OrderStatus::class)
                                 ->default(OrderStatus::Draft)
-                                ->live()
+                                ->live() // <--- Reactividad instantánea
+                                ->native(false) // <--- Reactividad instantánea
                                 ->required()
                                 ->disableOptionWhen(function ($value, ?Order $record, Get $get) {
                                     if (!$record) return false;
@@ -124,7 +125,8 @@ class OrderResource extends Resource
                                 ->label('Fecha')
                                 ->default(now())
                                 ->required()
-                                ->disabled(fn (Get $get) => ($get('status') instanceof \BackedEnum ? $get('status')->value : $get('status')) !== 'draft'),
+                                ->disabled(fn (Get $get) => ($get('status') instanceof \BackedEnum ? $get('status')->value : $get('status')) !== 'draft')
+                                ->dehydrated(),
 
                             Forms\Components\Select::make('priority')
                                 ->label('Prioridad')
@@ -230,11 +232,10 @@ class OrderResource extends Resource
             ])
             ->filtersLayout(Tables\Enums\FiltersLayout::AboveContent)
             ->headerActions([
-                // 1. EL BOTÓN DEL CAI (NUEVO)
+                // 1. EL BOTÓN DEL CAI
                 Tables\Actions\Action::make('configurar_cai')
                     ->label('Talonario (CAI)')
                     ->icon('heroicon-o-cog-8-tooth')
-                    // MAGIA: El botón se pone ROJO si el CAI vence en menos de 30 días
                     ->color(function () {
                         $settings = \App\Models\Setting::first();
                         if (!$settings || !$settings->cai_expiry) return 'danger';
@@ -284,7 +285,7 @@ class OrderResource extends Resource
                     ->icon('heroicon-o-rocket-launch')
                     ->color('success')
                     ->form([
-                        Forms\Components\Select::make('zone_ids')->label('Zona')->options(Zone::all()->pluck('name', 'id'))->multiple()->live(),
+                        Forms\Components\Select::make('zone_ids')->label('Zona')->options(Zone::all()->pluck('name', 'id'))->multiple()->live()->native(false),
                         Forms\Components\CheckboxList::make('locality_ids')->label('Localidades')
                             ->options(fn (Get $get) => Locality::whereIn('zone_id', $get('zone_ids') ?? [])->pluck('name', 'id'))->columns(3)->required()->bulkToggleable(),
                     ])
@@ -301,7 +302,7 @@ class OrderResource extends Resource
                             $count++;
                         }
 
-                        Notification::make()->title("Lanzamiento: {$count} pedidos principales (y sus derivados) enviados a armado.")->success()->send();
+                        Notification::make()->title("Lanzamiento: {$count} pedidos principales enviados a armado.")->success()->send();
                     }),
             ])
             ->bulkActions([
@@ -330,17 +331,12 @@ class OrderResource extends Resource
                 ]),
             ])
             ->actions([
-                // EDITAR (Solo Padres y en estados permitidos)
                 Tables\Actions\EditAction::make()
                     ->visible(function (Order $record) {
                         $status = $record->status instanceof \BackedEnum ? $record->status->value : $record->status;
                         $isEditable = !in_array($status, ['dispatched', 'paid', 'cancelled']);
                         return $isEditable && is_null($record->parent_id);
                     }),
-
-                // ==========================================
-                // BOTONES DIRECTOS (FLUJO PRINCIPAL)
-                // ==========================================
 
                 // DRAFT -> PROCESSING (A Armar)
                 Tables\Actions\Action::make('enviar_a_armar')
@@ -369,23 +365,28 @@ class OrderResource extends Resource
                         $hijosSinArmar = $record->children()->whereIn('status', ['draft', 'processing'])->exists();
                         return !$hijosSinArmar;
                     })
-                    ->action(function (Order $record, array $data) {
+                    // INYECTAMOS LA VARIABLE $action AQUÍ PARA PODER FRENAR EL MODAL
+                    ->action(function (Order $record, array $data, Tables\Actions\Action $action) {
                         $orderIds = Order::where('id', $record->id)->orWhere('parent_id', $record->id)->pluck('id')->toArray();
                         $itemsConsolidados = OrderItem::whereIn('order_id', $orderIds)->get();
                         
                         $totalPrendas = $itemsConsolidados->sum(fn($i) => $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity);
 
                         if ($data['billing_type'] === 'mixed' && $totalPrendas % 2 !== 0) {
-                            Notification::make()->danger()->title('Cantidad Impar')->body("No podés hacer 50/50 con {$totalPrendas} prendas. Debe ser par.")->send();
-                            return;
+                            Notification::make()->danger()->title('Cantidad Impar')->body("No podés hacer 50/50 con {$totalPrendas} prendas. Debe ser par.")->persistent()->send();
+                            // ESTO FRENA EL CIERRE DEL MODAL:
+                            $action->halt(); 
                         }
 
-                        // Anulamos factura vieja si existía una A o B
                         $facturaVieja = $record->invoices()->whereIn('invoice_type', ['A', 'B'])->latest()->first();
                         $estaAnulada = $facturaVieja ? $record->invoices()->where('invoice_type', 'NC')->where('parent_id', $facturaVieja->id)->exists() : false;
 
                         if ($facturaVieja && !$estaAnulada) {
-                            \App\Services\AfipService::anular($record);
+                            $resAnular = \App\Services\AfipService::anular($record);
+                            if (!$resAnular['success']) {
+                                Notification::make()->danger()->title('Error anulando comprobante previo')->body($resAnular['error'])->persistent()->send();
+                                $action->halt(); // FRENA SI FALLA ANULAR LA ANTERIOR
+                            }
                         }
 
                         $record->update(['billing_type' => $data['billing_type']]);
@@ -404,11 +405,13 @@ class OrderResource extends Resource
                             $record->children()->update(['status' => OrderStatus::Checked]);
                             Notification::make()->success()->title("Facturación exitosa")->send();
                         } else {
-                            Notification::make()->danger()->title('Error AFIP')->body($response['error'])->send();
+                            // SI AFIP RECHAZA (Ej: CUIT INVENTADO O CAÍDO), TE AVISA Y NO CIERRA LA PANTALLA
+                            Notification::make()->danger()->title('Error AFIP')->body($response['error'])->persistent()->send();
+                            $action->halt(); 
                         }
                     })
                     ->form(function (Order $record) {
-                        // Traemos el Padre y TODOS los hijos para el resumen
+                        // Resumen
                         $orderIds = \App\Models\Order::where('id', $record->id)->orWhere('parent_id', $record->id)->pluck('id')->toArray();
                         $itemsAgrupados = \App\Models\OrderItem::with('article')->whereIn('order_id', $orderIds)->get();
                         
@@ -458,12 +461,8 @@ class OrderResource extends Resource
                                     </tbody>
                                     <tfoot class='bg-gray-50 dark:bg-white/5'>
                                         <tr>
-                                            <td colspan='3' class='px-4 py-4 text-right text-sm font-bold text-gray-950 dark:text-white uppercase tracking-wider'>
-                                                Total Consolidado (Padre e Hijos):
-                                            </td>
-                                            <td class='px-4 py-4 text-right text-xl font-black text-primary-600 dark:text-primary-400'>
-                                                $ " . number_format($totalCostoPedido, 2, ',', '.') . "
-                                            </td>
+                                            <td colspan='3' class='px-4 py-4 text-right text-sm font-bold text-gray-950 dark:text-white uppercase tracking-wider'>Total Consolidado:</td>
+                                            <td class='px-4 py-4 text-right text-xl font-black text-primary-600 dark:text-primary-400'>$ " . number_format($totalCostoPedido, 2, ',', '.') . "</td>
                                         </tr>
                                     </tfoot>
                                 </table>
@@ -480,15 +479,16 @@ class OrderResource extends Resource
                                         ->label('Tipo Venta')
                                         ->options(['fiscal' => 'Fiscal (100% Blanco)', 'informal' => 'Interno (100% Negro)', 'mixed' => 'Mixto (50/50)'])
                                         ->default($record->billing_type ?? 'mixed')
-                                        ->live() // <--- CLAVE: Para que la pantalla reaccione en vivo
+                                        ->live() // AL NO TENER NATIVE(FALSE), REACCIONA AL INSTANTE
                                         ->required(),
                                     
                                     Forms\Components\Select::make('payment_method')
                                         ->label('Método Pago')
                                         ->options(['cta_cte' => 'Cta Cte', 'efectivo' => 'Efectivo', 'transferencia' => 'Transferencia', 'cheque' => 'Cheque'])
-                                        ->default($record->client->last_payment_method ?? 'cta_cte')->required()->live(),
+                                        ->default($record->client->last_payment_method ?? 'cta_cte')
+                                        ->live() // REACCIONA AL INSTANTE
+                                        ->required(),
 
-                                    // ESTE CAMPO AHORA SE OCULTA SI ES NEGRO
                                     Forms\Components\Select::make('alt_voucher_type')
                                         ->label('Tipo Comprobante')
                                         ->options(['1' => 'Factura A', '6' => 'Factura B'])
@@ -498,11 +498,10 @@ class OrderResource extends Resource
                                 ]),
                             ]),
 
-                            // ESTA SECCIÓN AHORA SE OCULTA SI ES NEGRO
                             Forms\Components\Section::make('Facturar a otro CUIT/Nombre (Opcional)')
                                 ->description('Completar solo si la factura NO es a nombre del cliente del pedido.')
                                 ->collapsed()
-                                ->visible(fn (Get $get) => $get('billing_type') !== 'informal') // <--- OCULTAR
+                                ->visible(fn (Get $get) => $get('billing_type') !== 'informal')
                                 ->schema([
                                     Forms\Components\Grid::make(2)->schema([
                                         Forms\Components\TextInput::make('alt_name')->label('Nombre / Razón Social Alt.'),
@@ -526,6 +525,7 @@ class OrderResource extends Resource
                             ]),
                         ];
                     }),
+
                 // CHECKED -> DISPATCHED (Despachar)
                 Tables\Actions\Action::make('despachar')
                     ->label('Cargar en Viajante')
@@ -555,15 +555,13 @@ class OrderResource extends Resource
                 // ==========================================
                 // EL NUEVO HUB DE IMPRESIÓN (FASE 6)
                 // ==========================================
-            Tables\Actions\ActionGroup::make([
+                Tables\Actions\ActionGroup::make([
                     
-                    // 1. REMITOS (Logística)
                     Tables\Actions\Action::make('print_remitos')
                         ->label('Remitos (x3)')
                         ->icon('heroicon-o-document-duplicate')
                         ->color('gray')
                         ->visible(fn (Order $record) => 
-                            // REGLA: Sale en Blanco o Mixto, NUNCA en 100% Negro
                             $record->billing_type !== 'informal' && 
                             in_array($record->status instanceof \BackedEnum ? $record->status->value : $record->status, ['checked', 'dispatched', 'paid']) && 
                             is_null($record->parent_id)
@@ -571,21 +569,17 @@ class OrderResource extends Resource
                         ->url(fn (Order $record) => url('/admin/orders/'.$record->id.'/remito'))
                         ->openUrlInNewTab(),
 
-                    // 2. PRESUPUESTO (BOLETA INTERNA "X") - ESTO ES LO QUE CORREGIMOS
                     Tables\Actions\Action::make('print_presupuesto')
                         ->label('Boleta Interna (X)')
                         ->icon('heroicon-o-document-currency-dollar')
                         ->color('warning')
                         ->visible(fn (Order $record) => 
-                            // REGLA: ¡SALE SIEMPRE! No importa si es fiscal, mixto o negro.
-                            // Si el pedido ya está cerrado (checked, despachado, pagado), se puede imprimir.
                             in_array($record->status instanceof \BackedEnum ? $record->status->value : $record->status, ['checked', 'dispatched', 'paid']) && 
                             is_null($record->parent_id)
                         )
                         ->url(fn (Order $record) => url('/admin/orders/'.$record->id.'/presupuesto'))
                         ->openUrlInNewTab(),
 
-                    // 3. FACTURA AFIP (Solo si existe en la BD)
                     Tables\Actions\Action::make('descargar_factura')
                         ->label('Facturas AFIP')
                         ->icon('heroicon-o-document-text')
@@ -606,6 +600,7 @@ class OrderResource extends Resource
                                 Forms\Components\Select::make('invoice_id')
                                     ->label('Seleccione la factura')
                                     ->options($invoices->mapWithKeys(fn($i) => [$i->id => "Factura {$i->number}"]))
+                                    ->native(false) // <--- INSTANTANEO
                                     ->required(),
                             ];
                         })
@@ -615,7 +610,6 @@ class OrderResource extends Resource
                             $livewire->js("window.open('{$url}', '_blank')");
                         }),
 
-                    // 4. NOTA DE CRÉDITO (Inteligente para múltiples NC)
                     Tables\Actions\Action::make('descargar_nc')
                         ->label('Notas de Crédito')
                         ->icon('heroicon-o-document-minus')
@@ -629,6 +623,7 @@ class OrderResource extends Resource
                                 Forms\Components\Select::make('invoice_id')
                                     ->label('Seleccione la Nota de Crédito')
                                     ->options($ncs->mapWithKeys(fn($nc) => [$nc->id => "NC {$nc->number} ({$nc->created_at->format('d/m/Y H:i')})"]))
+                                    ->native(false) // <--- INSTANTANEO
                                     ->required(),
                             ];
                         })
@@ -649,7 +644,6 @@ class OrderResource extends Resource
                     $status = $record->status instanceof \BackedEnum ? $record->status->value : $record->status;
                     $tieneFacturas = $record->invoices()->exists();
                     
-                    // Se muestra si está cerrado (facturado/despachado/pagado) o si ya se le emitió alguna factura/NC antes.
                     return in_array($status, ['checked', 'dispatched', 'paid']) || $tieneFacturas;
                 }),
                 
@@ -657,8 +651,6 @@ class OrderResource extends Resource
                 // ACCIONES ADMINISTRATIVAS SECUNDARIAS
                 // ==========================================
                 Tables\Actions\ActionGroup::make([
-                    
-                    // PASAR A STANDBY
                     Tables\Actions\Action::make('poner_en_standby')
                         ->label('Pausar (Standby)')
                         ->icon('heroicon-m-pause-circle')
@@ -677,8 +669,6 @@ class OrderResource extends Resource
                             Notification::make()->warning()->title('Pedido en Standby')->send();
                         }),
 
-                    // CANCELAR PEDIDO
-                    // CANCELAR PEDIDO (Con anulación automática de TODAS las facturas vivas)
                     Tables\Actions\Action::make('cancelar_pedido')
                         ->label('Cancelar Pedido')
                         ->icon('heroicon-m-x-circle')
@@ -693,7 +683,6 @@ class OrderResource extends Resource
                             Forms\Components\Textarea::make('reason')->label('Motivo de cancelación')->required()
                         ])
                         ->action(function (Order $record, array $data) {
-                            // 1. Buscamos TODAS las facturas "vivas" (tipo B que no tengan ya una NC asociada)
                             $facturasVivas = $record->invoices()->where('invoice_type', 'B')->get()->filter(function($factura) use ($record) {
                                 return !$record->invoices()
                                     ->where('invoice_type', 'NC')
@@ -703,35 +692,20 @@ class OrderResource extends Resource
 
                             if ($facturasVivas->isNotEmpty()) {
                                 Notification::make()->warning()->title("Anulando comprobantes en AFIP...")->send();
-                                
                                 foreach ($facturasVivas as $factura) {
-                                    // IMPORTANTE: Usamos el método que recibe el objeto Invoice directamente
-                                    // para asegurar que anulamos el comprobante correcto.
                                     $resAFIP = \App\Services\AfipService::anularFactura($factura);
-                                    
                                     if (!$resAFIP['success']) {
-                                        Notification::make()
-                                            ->danger()
-                                            ->title("Error AFIP: Factura {$factura->number}")
-                                            ->body($resAFIP['error'])
-                                            ->persistent()
-                                            ->send();
-                                        return; // FRENAMOS: No cancelamos el pedido si falla alguna anulación
+                                        Notification::make()->danger()->title("Error AFIP: Factura {$factura->number}")->body($resAFIP['error'])->persistent()->send();
+                                        return;
                                     }
                                 }
                             }
 
-                            // 2. Si no había facturas o todas se anularon correctamente, procedemos
                             $record->update(['status' => OrderStatus::Cancelled]);
                             $record->children()->update(['status' => OrderStatus::Cancelled]);
-                            
-                            Notification::make()
-                                ->success()
-                                ->title('Pedido y facturas anulados correctamente.')
-                                ->send();
+                            Notification::make()->success()->title('Pedido y facturas anulados correctamente.')->send();
                         }),
 
-                    // VOLVER ATRÁS
                     Tables\Actions\Action::make('volver_a_armar')
                         ->label('Volver a "Para Armar"')
                         ->icon('heroicon-m-arrow-uturn-left')
@@ -747,12 +721,10 @@ class OrderResource extends Resource
                             Notification::make()->warning()->title('Pedido regresado a preparación')->send();
                         }),
 
-                    // BORRAR INDIVIDUAL
                     Tables\Actions\DeleteAction::make()
                         ->visible(fn (Order $record) => ($record->status instanceof \BackedEnum ? $record->status->value : $record->status) === 'draft' && is_null($record->parent_id))
                         ->before(fn (Order $record) => $record->children()->delete()),
 
-                    // ANULAR CON SELECTOR DE DESTINO
                     Tables\Actions\Action::make('anular_factura')
                         ->label('Anular (NC)')
                         ->icon('heroicon-o-x-circle')
@@ -771,6 +743,7 @@ class OrderResource extends Resource
                                     'refacturar' => 'Volver a "Armado" (Para corregir mercadería y refacturar)',
                                     'cancelar' => 'Cancelar Pedido Completamente (Devolver stock)',
                                 ])
+                                ->native(false) // <--- INSTANTANEO
                                 ->default('refacturar')
                                 ->required()
                         ])

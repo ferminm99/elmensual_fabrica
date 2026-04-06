@@ -9,14 +9,15 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('clients', function (Blueprint $table) {
-            $table->softDeletes();
+            // Agregamos la columna 'code', que sea única para no tener códigos repetidos
+            $table->string('code')->nullable()->unique()->after('id');
         });
     }
 
     public function down(): void
     {
         Schema::table('clients', function (Blueprint $table) {
-            $table->dropSoftDeletes();
+            $table->dropColumn('code');
         });
     }
 };

@@ -9,14 +9,14 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('clients', function (Blueprint $table) {
-            $table->softDeletes();
+            $table->text('observations')->nullable()->after('email');
         });
     }
 
     public function down(): void
     {
         Schema::table('clients', function (Blueprint $table) {
-            $table->dropSoftDeletes();
+            $table->dropColumn('observations');
         });
     }
 };

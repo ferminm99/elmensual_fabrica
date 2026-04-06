@@ -7,25 +7,30 @@ use App\Filament\Resources\ClientResource\RelationManagers\PaymentsRelationManag
 use App\Filament\Resources\ClientResource\RelationManagers\OrdersRelationManager;
 use App\Filament\Resources\ProductionOrderResource\RelationManagers\ActivitiesRelationManager;
 use App\Models\Client;
-use App\Models\CompanyAccount;
-use App\Models\Transaction;
-use App\Models\Check;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
-use Filament\Notifications\Notification;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\SoftDeletingScope;
 
 class ClientResource extends Resource
 {
     protected static ?string $model = Client::class;
-
     protected static ?string $navigationIcon = 'heroicon-o-user-group';
-    
     protected static ?string $modelLabel = 'Cliente';
     protected static ?string $pluralModelLabel = 'Clientes';
     protected static ?string $navigationGroup = 'Ventas';
+
+    // MAGIA DE FILAMENT: Esto hace que al editar/ver puedas consultar clientes dados de baja
+    public static function getEloquentQuery(): Builder
+    {
+        return parent::getEloquentQuery()
+            ->withoutGlobalScopes([
+                SoftDeletingScope::class,
+            ]);
+    }
 
     public static function form(Form $form): Form
     {
@@ -37,45 +42,40 @@ class ClientResource extends Resource
                             ->label('Nombre / Razón Social')
                             ->required()
                             ->maxLength(255),
-
                         Forms\Components\TextInput::make('tax_id')
                             ->label('CUIT / DNI')
                             ->maxLength(20),
-
                         Forms\Components\TextInput::make('email')
                             ->email()
                             ->maxLength(255),
-
                         Forms\Components\TextInput::make('phone')
                             ->label('Teléfono')
                             ->tel()
                             ->maxLength(255),
-
                         Forms\Components\Select::make('afip_tax_condition_id')
                             ->label('Condición frente al IVA')
                             ->options(Client::AFIP_TAX_CONDITIONS)
                             ->default(5)
-                            ->required(),    
-
-                        // --- TU SISTEMA DE DESCUENTOS ---
+                            ->required(),  
                         Forms\Components\TextInput::make('default_discount')
                             ->label('Descuento Fijo (%)')
                             ->numeric()
                             ->default(0)
                             ->suffix('%'),
-
-                        // --- SISTEMA DE REFERIDOS ---
                         Forms\Components\Select::make('salesman_id')
                             ->label('Viajante Asignado')
-                            ->relationship('salesman', 'name') // Usa la tabla salesmen
+                            ->relationship('salesman', 'name')
                             ->searchable()
                             ->preload(),
-                            
+                        // CAMPO OBSERVACIONES
+                        Forms\Components\Textarea::make('observations')
+                            ->label('Observaciones')
+                            ->rows(3)
+                            ->columnSpanFull(),
                     ])->columns(2),
 
                 Forms\Components\Section::make('Ubicación y Logística')
                     ->schema([
-                        // Selector de Zona (No se guarda en el cliente, sirve para filtrar)
                         Forms\Components\Select::make('zone_id')
                             ->label('Zona')
                             ->options(\App\Models\Zone::all()->pluck('name', 'id'))
@@ -88,8 +88,6 @@ class ClientResource extends Resource
                                     $set('zone_id', $record->locality->zone_id);
                                 }
                             }),
-
-                        // Selector de Localidad (Este sí se guarda en la DB)
                         Forms\Components\Select::make('locality_id')
                             ->label('Localidad')
                             ->options(function (Forms\Get $get) {
@@ -101,11 +99,13 @@ class ClientResource extends Resource
                             ->searchable()
                             ->required()
                             ->live(),
-
                         Forms\Components\TextInput::make('address')
                             ->label('Dirección')
-                            ->maxLength(255)
-                            ->columnSpanFull(),
+                            ->maxLength(255),
+                        // CAMPO CÓDIGO POSTAL
+                        Forms\Components\TextInput::make('postal_code')
+                            ->label('Código Postal (C.P.)')
+                            ->maxLength(20),
                     ])->columns(2),
 
                 Forms\Components\Section::make('Cuentas Corrientes')
@@ -127,18 +127,18 @@ class ClientResource extends Resource
                     ->description(fn (Client $record) => 
                         ($record->locality?->name ?? 'S/L') . ' - ' . ($record->locality?->zone?->name ?? 'S/Z')
                     ),
-
+                Tables\Columns\TextColumn::make('postal_code')
+                    ->label('C.P.')
+                    ->searchable()
+                    ->toggleable(isToggledHiddenByDefault: true), // Lo ocultamos por defecto para no saturar
                 Tables\Columns\TextColumn::make('fiscal_debt') 
                     ->label('Saldo Oficial')
                     ->money('ARS')
                     ->sortable(),
-
-                // SE OCULTA POR DEFECTO PARA PRIVACIDAD
                 Tables\Columns\TextColumn::make('internal_debt')
                     ->label('Saldo Interno')
                     ->money('ARS')
                     ->toggleable(isToggledHiddenByDefault: true),
-
                 Tables\Columns\TextColumn::make('real_total')
                     ->label('TOTAL REAL')
                     ->money('ARS')
@@ -146,19 +146,21 @@ class ClientResource extends Resource
                     ->weight('black')
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
+            ->filters([
+                // ESTE FILTRO TE PERMITE VER A LOS DADOS DE BAJA
+                Tables\Filters\TrashedFilter::make()->label('Estado de Baja'),
+            ])
             ->actions([
                 Tables\Actions\EditAction::make(),
+                // EL BOTÓN MÁGICO DE BAJA
                 Tables\Actions\DeleteAction::make()
-                    ->before(function (Tables\Actions\DeleteAction $action, Client $record) {
-                        if ($record->orders()->exists()) {
-                            Notification::make()
-                                ->title('No se puede borrar')
-                                ->body('El cliente tiene pedidos asociados. Deberías darlo de baja en su lugar.')
-                                ->danger()
-                                ->send();
-                            $action->cancel();
-                        }
-                    }),
+                    ->label('Dar de Baja')
+                    ->modalHeading('¿Dar de baja al cliente?')
+                    ->modalDescription('El cliente desaparecerá de las búsquedas, pero sus pedidos se mantendrán intactos en el historial.')
+                    ->modalSubmitActionLabel('Sí, dar de baja'),
+                // EL BOTÓN PARA REVIVIRLOS (Solo aparece si están dados de baja)
+                Tables\Actions\RestoreAction::make()
+                    ->label('Dar de Alta'),
             ]);
     }
 
