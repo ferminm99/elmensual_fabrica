@@ -43,7 +43,7 @@ class Supplier extends Model
     // Pagos en efectivo/transf que le hicimos
     public function transactions(): HasMany
     {
-        return $this->hasMany(Transaction::class);
+        return $this->hasMany(Transaction::class)->orderBy('created_at', 'desc');
     }
     
     protected $casts = [

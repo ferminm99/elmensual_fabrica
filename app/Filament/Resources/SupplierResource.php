@@ -4,7 +4,9 @@ namespace App\Filament\Resources;
 
 use App\Filament\Resources\SupplierResource\Pages;
 use App\Filament\Resources\ProductionOrderResource\RelationManagers\ActivitiesRelationManager;
+use App\Filament\Resources\SupplierResource\RelationManagers\TransactionsRelationManager;
 use App\Models\Supplier;
+use Illuminate\Support\Facades\DB;
 use App\Models\CompanyAccount;
 use App\Models\Transaction;
 use Filament\Forms\Get;
@@ -99,7 +101,8 @@ class SupplierResource extends Resource
                     ->money('ARS')
                     ->state(fn (Supplier $record) => $record->account_balance_fiscal + $record->account_balance_internal)
                     ->weight('black')
-                    ->color('danger')
+                    // Le enseñamos: Si > 0 (Debemos) es Rojo. Si < 0 (Saldo a favor) es Verde. Si es 0 es Gris.
+                    ->color(fn ($state) => $state > 0 ? 'danger' : ($state < 0 ? 'success' : 'gray'))
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->actions([
@@ -191,7 +194,7 @@ class SupplierResource extends Resource
                             // 2. Registramos el "gasto" para auditoría (Sin tocar bancos todavía)
                             Transaction::create([
                                 'supplier_id' => $record->id, // Asumiendo que agregaste supplier_id a Transactions
-                                'type' => 'Purchase', // Podrías usar 'Expense' si no querés crear un Enum nuevo
+                                'type' => 'Outcome', // Podrías usar 'Expense' si no querés crear un Enum nuevo
                                 'amount' => $amount,
                                 'description' => "Compra: {$data['tipo_comprobante']} {$data['numero']}",
                                 'concept' => 'Mercadería / Insumos',
@@ -276,7 +279,7 @@ class SupplierResource extends Resource
                             Transaction::create([
                                 'company_account_id' => $account->id,
                                 'supplier_id' => $record->id,
-                                'type' => 'Expense', // Egreso de dinero
+                                'type' => 'Outcome', // Egreso de dinero
                                 'amount' => $amount,
                                 'description' => "Pago a Proveedor: {$record->name}",
                                 'concept' => 'Pago Proveedores',
@@ -303,6 +306,7 @@ class SupplierResource extends Resource
     {
         return [
             ActivitiesRelationManager::class,
+            TransactionsRelationManager::class,
         ];
     }
 }
