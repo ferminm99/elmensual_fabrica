@@ -11,7 +11,7 @@ class Check extends Model
     // Usamos fillable para definir explícitamente qué campos se pueden guardar
     protected $fillable = [
         'client_id',
-        'supplier_id', // <--- AGREGADO (Para cuando lo entregamos)
+        'supplier_id', 
         'bank_name',
         'number',
         'owner',
@@ -20,8 +20,9 @@ class Check extends Model
         'status',
         'type',
         'is_echeq',
+        'origin',
         'deposited_at',
-        'delivered_at', // <--- AGREGADO (Fecha de entrega)
+        'delivered_at',
     ];
 
     protected $casts = [
@@ -49,4 +50,10 @@ class Check extends Model
     {
         return $this->belongsTo(Supplier::class, 'supplier_id');
     }
+
+    public function bank(): BelongsTo
+    {
+        return $this->belongsTo(Bank::class);
+    }
+
 }

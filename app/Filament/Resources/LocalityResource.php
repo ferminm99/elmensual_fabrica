@@ -3,6 +3,7 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\LocalityResource\Pages;
+use App\Filament\Resources\LocalityResource\RelationManagers\ClientsRelationManager;
 use App\Models\Locality;
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -88,7 +89,7 @@ class LocalityResource extends Resource
     public static function getRelations(): array
     {
         return [
-            //
+            ClientsRelationManager::class, // <-- Solo el nombre de la clase
         ];
     }
 

@@ -6,19 +6,22 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('supplier_invoices', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('supplier_id')->constrained();
-            $table->string('tipo_comprobante'); // 01, 06, 11, etc.
-            $table->string('numero'); // Ej: 0001-00001234
-            $table->date('fecha_emision');
+            $table->foreignId('supplier_id')->constrained()->onDelete('cascade');
             
-            // Impuestos
+            // Datos del comprobante
+            $table->string('tipo_comprobante')->nullable();
+            $table->string('numero')->nullable();
+            $table->date('fecha_emision')->nullable();
+            
+            // Pruebas y validación (AFIP)
+            $table->string('cae')->nullable();
+            $table->string('attachment')->nullable();
+            
+            // Desglose de Impuestos (Libro IVA)
             $table->decimal('neto_gravado', 15, 2)->default(0);
             $table->decimal('no_gravado', 15, 2)->default(0);
             $table->decimal('exento', 15, 2)->default(0);
@@ -26,15 +29,12 @@ return new class extends Migration
             $table->decimal('perc_iva', 15, 2)->default(0);
             $table->decimal('perc_iibb', 15, 2)->default(0);
             $table->decimal('perc_imp_internos', 15, 2)->default(0);
-            $table->decimal('total', 15, 2);
+            $table->decimal('total', 15, 2)->default(0);
             
             $table->timestamps();
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('supplier_invoices');

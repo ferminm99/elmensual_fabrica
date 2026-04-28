@@ -50,4 +50,10 @@ class Supplier extends Model
         'fiscal_debt' => 'decimal:2',   // <--- CORREGIDO
         'internal_debt' => 'decimal:2', // <--- CORREGIDO
     ];
+
+    // Agregá esta función adentro de Supplier.php
+    public function bankAccounts()
+    {
+        return $this->hasMany(SupplierBankAccount::class);
+    }
 }

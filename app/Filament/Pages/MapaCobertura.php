@@ -36,6 +36,7 @@ class MapaCobertura extends Page
             }
 
             $mapData[] = [
+                'id' => $locality->id,
                 'name' => $locality->name,
                 'count' => $count,
                 'limit' => $limit,
