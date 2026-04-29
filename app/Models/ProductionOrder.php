@@ -13,6 +13,13 @@ class ProductionOrder extends Model
     use LogsActivity;
     protected $guarded = [];
 
+    protected $casts = [
+        'article_ids' => 'array',
+        'used_materials' => 'array',
+        'article_groups' => 'array',
+        'color_ids' => 'array',
+    ];
+    
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()

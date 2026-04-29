@@ -83,7 +83,19 @@
                                             </td>
                                             <td class="p-0 text-center border-l dark:border-white/5">
                                                 @if($section['editable'])
-                                                    <button type="button" x-on:click="$wire.mountFormComponentAction('article_groups', '{{ $section['key'] === 'article_groups' ? 'fillRow' : 'fillChildRow' }}', { uuid: '{{ $uuid }}', {{ $section['key'] === 'article_groups' ? 'groupKey' : 'key' }}: '{{ $groupKey }}' })" class="text-{{ $section['color'] }}-500 p-1 hover:scale-110 transition-transform"><x-heroicon-m-bolt class="w-4 h-4 mx-auto"/></button>
+                                                    <button type="button" @click="
+                                                        let tr = $el.closest('tr');
+                                                        let inps = tr.querySelectorAll('input[type=number]');
+                                                        let val = Array.from(inps).find(i => i.value > 0)?.value;
+                                                        if(val) {
+                                                            inps.forEach(i => { 
+                                                                i.value = val; 
+                                                                i.dispatchEvent(new Event('input')); 
+                                                            });
+                                                        }
+                                                    " class="text-{{ $section['color'] }}-500 p-1 hover:scale-110 transition-transform">
+                                                        <x-heroicon-m-bolt class="w-4 h-4 mx-auto"/>
+                                                    </button>
                                                 @endif
                                             </td>
                                             @foreach($sizes as $size)
@@ -153,3 +165,46 @@
         </div>
     @endif
 </div>
+
+<script>
+    // Usamos delegación de eventos para que funcione perfecto adentro del Modal de Cierre
+    document.addEventListener('input', (e) => {
+        if(e.target.classList.contains('matrix-input-clean')) {
+            let input = e.target;
+            
+            // Guardamos el valor original la primera vez que se toca
+            if(!input.hasAttribute('data-original')) {
+                input.setAttribute('data-original', input.defaultValue || input.value);
+            }
+            
+            let current = input.value;
+            let original = input.getAttribute('data-original');
+            let cell = input.closest('.matrix-sq-cell');
+            
+            // Si el número es distinto al original de la planificación
+            if (current !== original && current !== '') {
+                cell.classList.remove('st-edit', 'st-ok');
+                // Forzamos los colores de alerta (naranja fuerte)
+                cell.classList.add('!bg-orange-100', '!border-orange-500', '!text-orange-800', 'dark:!bg-orange-900/40', 'dark:!text-orange-300');
+                
+                // Agregamos el texto "Era: X" abajo de la cajita
+                if(!cell.querySelector('.merma-alerta')) {
+                    let span = document.createElement('span');
+                    span.className = 'merma-alerta text-[10px] text-orange-700 dark:text-orange-400 font-black absolute -bottom-5 w-full text-center whitespace-nowrap z-10';
+                    span.innerText = 'Era: ' + original;
+                    cell.style.position = 'relative';
+                    cell.appendChild(span);
+                } else {
+                    cell.querySelector('.merma-alerta').innerText = 'Era: ' + original;
+                }
+            } else {
+                // Si vuelve a escribir el número original, vuelve todo a la normalidad
+                cell.classList.remove('!bg-orange-100', '!border-orange-500', '!text-orange-800', 'dark:!bg-orange-900/40', 'dark:!text-orange-300');
+                cell.classList.add('st-edit');
+                if(cell.querySelector('.merma-alerta')) {
+                    cell.querySelector('.merma-alerta').remove();
+                }
+            }
+        }
+    });
+</script>
