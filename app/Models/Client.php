@@ -109,6 +109,11 @@ class Client extends Model
         }
     }
 
+    public function bankAccounts()
+    {
+        return $this->hasMany(ClientBankAccount::class);
+    }
+
     // --- LÓGICA DE NEGOCIO (FIFO) ---
 
     public function distributePayment(float $amount, string $originType)

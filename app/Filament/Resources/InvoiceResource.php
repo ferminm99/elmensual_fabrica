@@ -25,7 +25,7 @@ class InvoiceResource extends Resource
     protected static ?string $model = Invoice::class;
 
     protected static ?string $navigationIcon = 'heroicon-o-document-chart-bar';
-    protected static ?string $navigationGroup = 'Ventas';
+     protected static ?string $navigationGroup = 'Contabilidad';
     protected static ?string $modelLabel = 'Comprobante Fiscal';
     protected static ?string $pluralModelLabel = 'Libro de IVA (Facturas)';
 

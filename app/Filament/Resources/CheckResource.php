@@ -89,7 +89,7 @@ class CheckResource extends Resource
                             ->options([
                                 'InPortfolio' => 'En Cartera',
                                 'Deposited' => 'Depositado',
-                                'Delivered' => 'Entregado a Proveedor',
+                                'Delivered' => 'Entregado',
                                 'Rejected' => 'Rechazado',
                             ])
                             ->default('InPortfolio')
@@ -194,14 +194,14 @@ class CheckResource extends Resource
                     ->color(fn ($state) => match ($state->value ?? $state) {
                         'InPortfolio' => 'info',      
                         'Deposited' => 'success',     
-                        'Used' => 'warning',          
+                        'Delivered' => 'warning',          
                         'Rejected' => 'danger',       
                         default => 'gray',
                     })
                     ->formatStateUsing(fn ($state) => match ($state->value ?? $state) {
                         'InPortfolio' => 'En Cartera',
                         'Deposited' => 'Depositado',
-                        'Used' => 'Entregado',
+                        'Delivered' => 'Entregado',
                         'Rejected' => 'Rechazado',
                         default => $state,
                     }),
@@ -212,7 +212,7 @@ class CheckResource extends Resource
                     ->options([
                         'InPortfolio' => 'En Cartera',
                         'Deposited' => 'Depositados',
-                        'Used' => 'Entregados',
+                        'Delivered' => 'Entregados',
                         'Rejected' => 'Rechazados',
                     ])
                     ->default('InPortfolio'),

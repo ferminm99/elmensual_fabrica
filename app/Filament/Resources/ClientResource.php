@@ -9,6 +9,8 @@ use App\Filament\Resources\ProductionOrderResource\RelationManagers\ActivitiesRe
 use App\Models\Client;
 use Filament\Forms;
 use Filament\Forms\Form;
+use Filament\Forms\Set;
+use App\Models\Bank;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
@@ -108,6 +110,48 @@ class ClientResource extends Resource
                             ->maxLength(20),
                     ])->columns(2),
 
+                
+                Forms\Components\Section::make('Cuentas Bancarias del Cliente')
+                    ->description('Cargá los CBU/CVU desde donde este cliente nos suele transferir o enviar cheques.')
+                    ->collapsed() // Lo dejamos cerradito para que no moleste si no lo usás
+                    ->schema([
+                        Forms\Components\Repeater::make('bankAccounts')
+                            ->relationship() // Engancha con la función que pusimos en Client.php
+                            ->schema([
+                                Forms\Components\TextInput::make('cbu_cvu')
+                                    ->label('CBU / CVU')
+                                    ->length(22)
+                                    ->required()
+                                    ->live(debounce: 500)
+                                    ->afterStateUpdated(function (Set $set, $state) {
+                                        if (strlen($state) >= 3) {
+                                            $prefix = substr($state, 0, 3);
+                                            $bank = \App\Models\Bank::where('code', $prefix)->first();
+                                            
+                                            if ($bank) {
+                                                $set('bank_id', $bank->id);
+                                            } else {
+                                                $billetera = \App\Models\Bank::where('code', '000')->first();
+                                                if ($billetera) {
+                                                    $set('bank_id', $billetera->id);
+                                                }
+                                            }
+                                        }
+                                    }),
+                                    
+                                Forms\Components\Select::make('bank_id')
+                                    ->label('Banco / Billetera')
+                                    ->relationship('bank', 'name')
+                                    ->searchable()
+                                    ->preload()
+                                    ->required(),
+                                    
+                                Forms\Components\TextInput::make('alias')
+                                    ->label('Alias'),
+                            ])
+                            ->columns(3)
+                            ->itemLabel(fn (array $state): ?string => \App\Models\Bank::find($state['bank_id'])?->name ?? 'Nueva Cuenta'),
+                    ]),
                 Forms\Components\Section::make('Cuentas Corrientes')
                     ->schema([
                         Forms\Components\TextInput::make('fiscal_debt')->label('Saldo Fiscal')->prefix('$')->numeric()->default(0),

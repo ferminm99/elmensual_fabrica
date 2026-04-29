@@ -56,4 +56,10 @@ class Supplier extends Model
     {
         return $this->hasMany(SupplierBankAccount::class);
     }
+
+    public function supplierInvoices()
+    {
+        return $this->hasMany(SupplierInvoice::class);
+    }
+    
 }
