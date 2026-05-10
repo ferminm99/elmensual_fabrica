@@ -30,8 +30,6 @@ class ArticleResource extends Resource
     {
         return $form
             ->schema([
-                // --- SECCIÓN ÚNICA: DATOS GENERALES ---
-                // (Ya no ponemos el Repeater aquí para que no se haga pesado)
                 Forms\Components\Section::make('Detalle del Producto')
                     ->schema([
                         Forms\Components\TextInput::make('name')
@@ -96,7 +94,13 @@ class ArticleResource extends Resource
                     ->money('ARS')
                     ->sortable(),
 
-                // Columna calculada: Suma el stock de todos los hijos
+                // Mostramos el precio anterior oculto por defecto para auditoría
+                Tables\Columns\TextColumn::make('previous_cost')
+                    ->label('Costo Anterior')
+                    ->money('ARS')
+                    ->color('gray')
+                    ->toggleable(isToggledHiddenByDefault: true),
+
                 Tables\Columns\TextColumn::make('skus_sum_stock_quantity')
                     ->sum('skus', 'stock_quantity')
                     ->label('Stock Total')
@@ -126,32 +130,78 @@ class ArticleResource extends Resource
                     Tables\Actions\ForceDeleteBulkAction::make(),
                     Tables\Actions\RestoreBulkAction::make(),
                     
+                    // ACCIÓN 1: APLICAR AUMENTO (Guarda el precio viejo)
                     Tables\Actions\BulkAction::make('update_prices')
                         ->label('Actualizar Precios')
-                        ->icon('heroicon-o-currency-dollar')
+                        ->icon('heroicon-o-arrow-trending-up')
                         ->color('success')
                         ->form([
                             Forms\Components\TextInput::make('percentage')
-                                ->label('Porcentaje %')->numeric()->required(),
+                                ->label('Porcentaje de Aumento %')
+                                ->numeric()
+                                ->required(),
                             Forms\Components\Select::make('rounding')
                                 ->label('Redondeo')
                                 ->options([
-                                    'none' => 'Exacto',
-                                    'integer' => 'Al Peso',
-                                    'ten' => 'A la Decena',
-                                    'hundred' => 'A la Centena',
+                                    'none' => 'Exacto (Con centavos)',
+                                    'integer' => 'Al Peso Exacto',
+                                    'ten' => 'A la Decena (Termina en 0)',
+                                    'hundred' => 'A la Centena (Termina en 00)',
                                 ])->default('ten')->required(),
                         ])
                         ->action(function (Collection $records, array $data) {
                             $percent = 1 + ($data['percentage'] / 100);
+                            $conteo = 0;
+                            
                             foreach ($records as $record) {
-                                $newPrice = $record->base_cost * $percent;
+                                // 1. Guardamos el precio actual en "previous_cost" como un backup
+                                $precioViejo = $record->base_cost;
+                                
+                                // 2. Calculamos el precio nuevo
+                                $newPrice = $precioViejo * $percent;
                                 if ($data['rounding'] === 'integer') $newPrice = ceil($newPrice);
                                 elseif ($data['rounding'] === 'ten') $newPrice = ceil($newPrice / 10) * 10; 
                                 elseif ($data['rounding'] === 'hundred') $newPrice = ceil($newPrice / 100) * 100; 
-                                $record->update(['base_cost' => $newPrice]);
+                                
+                                // 3. Actualizamos ambos campos
+                                $record->update([
+                                    'previous_cost' => $precioViejo, 
+                                    'base_cost' => $newPrice
+                                ]);
+                                $conteo++;
                             }
-                            Notification::make()->title('Precios actualizados')->success()->send();
+                            
+                            Notification::make()->title("Se aumentaron los precios de {$conteo} artículos.")->success()->send();
+                        }),
+
+                    // ACCIÓN 2: DESHACER ÚLTIMO AUMENTO
+                    Tables\Actions\BulkAction::make('undo_price_update')
+                        ->label('Deshacer Último Aumento')
+                        ->icon('heroicon-o-arrow-uturn-left')
+                        ->color('warning')
+                        ->requiresConfirmation()
+                        ->modalHeading('¿Estás seguro de deshacer el último aumento?')
+                        ->modalDescription('Esta acción volverá a establecer el "Costo Base" a su valor anterior exacto para los artículos seleccionados. Solo funciona 1 vez por artículo.')
+                        ->action(function (Collection $records) {
+                            $conteo = 0;
+                            
+                            foreach ($records as $record) {
+                                // Solo lo hace si el artículo tiene un precio anterior guardado
+                                if (!is_null($record->previous_cost)) {
+                                    $record->update([
+                                        'base_cost' => $record->previous_cost,
+                                        // Vaciamos el previous_cost para no dejar que deshagan al infinito y hagan lío
+                                        'previous_cost' => null 
+                                    ]);
+                                    $conteo++;
+                                }
+                            }
+
+                            if ($conteo > 0) {
+                                Notification::make()->title("Se restauró el precio original de {$conteo} artículos.")->success()->send();
+                            } else {
+                                Notification::make()->title('Ningún artículo tenía un precio anterior guardado.')->warning()->send();
+                            }
                         }),
                 ]),
             ]);
@@ -166,7 +216,6 @@ class ArticleResource extends Resource
     public static function getRelations(): array
     {
         return [
-            // AQUÍ AGREGAMOS LA GESTIÓN DE SKUS (La tabla de abajo)
             SkusRelationManager::class, 
             RecipesRelationManager::class,
             ActivitiesRelationManager::class,

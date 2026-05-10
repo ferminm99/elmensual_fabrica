@@ -8,6 +8,7 @@
         
         /* CONTENEDOR PRINCIPAL QUE ENCUADRA TODO */
         .main-frame { 
+            /* Si NO es pre-impreso, lleva borde grueso. Si es pre-impreso, se lo sacamos en línea (abajo) */
             border: 1.5pt solid #000; 
             width: 100%; 
             position: relative;
@@ -65,11 +66,25 @@
 <body>
     @php
         $copias = [['t' => 'ORIGINAL (FÁBRICA)'], ['t' => 'DUPLICADO (TRANSPORTE)'], ['t' => 'TRIPLICADO (CLIENTE)']];
+        
+        // Atrapamos la variable. Si no existe, false por defecto.
+        $esPreImpreso = $settings->use_preprinted_remito ?? false;
+        $margenVacio = $settings->preprinted_margin ?? 12.5; 
     @endphp
 
     @foreach($copias as $copia)
     <div class="remito-wrapper">
-        <div class="main-frame">
+        
+        {{-- SI ES PRE-IMPRESO: Empujamos todo para abajo según los centímetros configurados --}}
+        @if($esPreImpreso)
+            <div style="height: {{ $margenVacio }}cm;"></div>
+        @endif
+
+        {{-- SI ES PRE-IMPRESO le quitamos el recuadro negro porque tu hoja ya lo tiene dibujado --}}
+        <div class="main-frame" style="{{ $esPreImpreso ? 'border: none !important;' : '' }}">
+            
+            {{-- SOLO DIBUJAMOS EL ENCABEZADO FISCAL SI NO ESTÁ PREIMPRESO --}}
+            @if(!$esPreImpreso)
             <table class="header-box">
                 <tr>
                     <td style="width: 45%;">
@@ -98,15 +113,16 @@
                     </td>
                 </tr>
             </table>
+            @endif
 
             <table class="client-box">
                 <tr>
-                    <td style="width: 60%; border-right: 1pt solid #000;">
+                    <td style="width: 60%; {{ $esPreImpreso ? 'border-top: 1pt solid #000;' : '' }} border-right: 1pt solid #000;">
                         <span class="label">Señores:</span> {{ str_pad($order->client->id, 5, '0', STR_PAD_LEFT) }} &nbsp; {{ strtoupper($order->client->name) }}<br>
                         <span class="label">Domicilio:</span> {{ strtoupper($order->client->address ?? 'S/D') }}<br>
                         <span class="label">Localidad:</span> {{ strtoupper($order->client->locality->name ?? 'S/D') }} ({{ $order->client->locality->postal_code ?? '' }})
                     </td>
-                    <td style="width: 40%;">
+                    <td style="width: 40%; {{ $esPreImpreso ? 'border-top: 1pt solid #000;' : '' }}">
                         <span class="label">Provincia:</span> {{ strtoupper($order->client->locality->province ?? 'BS. AS.') }}<br>
                         <span class="label">I.V.A.:</span> {{ strtoupper($order->client->tax_condition ?? 'Consumidor Final') }}<br>
                         <span class="label">C.U.I.T.:</span> {{ $order->client->tax_id ?? 'S/D' }}
@@ -145,8 +161,8 @@
                 </tbody>
             </table>
 
-            <div class="totals-container">
-                <table class="totals-table">
+            <div class="totals-container" style="{{ $esPreImpreso ? 'border-bottom: 1pt solid #000;' : '' }}">
+                <table class="totals-table" style="{{ $esPreImpreso ? 'border-bottom: 1pt solid #000;' : '' }}">
                     <tr>
                         <td class="t-label">Subtotal</td>
                         <td class="t-value">$ {{ number_format($totales['bruto'], 2, ',', '.') }}</td>
@@ -170,7 +186,8 @@
                 </table>
                 <div style="clear: both;"></div>
             </div>
-            <div style="margin-top: 20px; padding: 10px; border-top: 1pt solid #000;">
+
+            <div style="margin-top: 20px; padding: 10px; {{ !$esPreImpreso ? 'border-top: 1pt solid #000;' : '' }}">
                 <table style="width: 100%; border: none;">
                     <tr>
                         <td style="width: 50%; border: none;">
@@ -186,17 +203,24 @@
                     </tr>
                 </table>
             </div>
-        </div> <div class="footer-info">
+        </div> 
+
+        <div class="footer-info">
             <div class="copy-type">{{ $copia['t'] }}</div>
-            <div class="cae-section">
-                @if($esFiscal && $invoice)
-                    C.A.E. N°: {{ $invoice->cae_afip }} &nbsp;&nbsp; Vto: {{ \Carbon\Carbon::parse($invoice->cae_expiry)->format('d/m/Y') }}
-                @else
-                    CAI N°: {{ $settings->cai_number }} &nbsp;&nbsp; Vto: {{ \Carbon\Carbon::parse($settings->cai_expiry)->format('d/m/Y') }}
-                @endif
-            </div>
+            
+            {{-- EL CAI ESTÁ ESCONDIDO SI LA HOJA YA LO TRAE IMPRESO ABAJO --}}
+            @if(!$esPreImpreso)
+                <div class="cae-section">
+                    @if($esFiscal && $invoice)
+                        C.A.E. N°: {{ $invoice->cae_afip }} &nbsp;&nbsp; Vto: {{ \Carbon\Carbon::parse($invoice->cae_expiry)->format('d/m/Y') }}
+                    @else
+                        CAI N°: {{ $settings->cai_number }} &nbsp;&nbsp; Vto: {{ \Carbon\Carbon::parse($settings->cai_expiry)->format('d/m/Y') }}
+                    @endif
+                </div>
+            @endif
         </div>
-        @if(isset($qrImage) && $qrImage)
+
+        @if(isset($qrImage) && $qrImage && !$esPreImpreso)
             <div style="position: absolute; bottom: 30px; left: 15px; text-align: left; width: 250px;">
                 <img src="{{ $qrImage }}" width="70" style="float: left; margin-right: 10px;">
                 <div style="font-size: 7px; margin-top: 15px;">

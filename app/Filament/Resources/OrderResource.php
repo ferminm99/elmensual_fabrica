@@ -233,6 +233,7 @@ class OrderResource extends Resource
             ->filtersLayout(Tables\Enums\FiltersLayout::AboveContent)
             ->headerActions([
                 // 1. EL BOTÓN DEL CAI
+                // 1. EL BOTÓN DEL CAI
                 Tables\Actions\Action::make('configurar_cai')
                     ->label('Talonario (CAI)')
                     ->icon('heroicon-o-cog-8-tooth')
@@ -272,11 +273,28 @@ class OrderResource extends Resource
                                 ->numeric()
                                 ->required(),
                         ]),
+                        
+                        // --- ACÁ EMPIEZA LO NUEVO PARA LA HOJA FÍSICA ---
+                        Forms\Components\Section::make('Alineación de Impresión (Hojas Físicas)')
+                            ->schema([
+                                Forms\Components\Toggle::make('use_preprinted_remito')
+                                    ->label('Usar Talonario Pre-Impreso')
+                                    ->helperText('Oculta el encabezado digital y empuja la tabla hacia abajo para imprimir sobre tus hojas membretadas de "Lamotex".')
+                                    ->live(),
+                                    
+                                Forms\Components\TextInput::make('preprinted_margin')
+                                    ->label('Margen Superior a dejar (Centímetros)')
+                                    ->numeric()
+                                    ->step(0.1)
+                                    ->default(12.5) // A ojo por la imagen, son unos 12.5 cm
+                                    ->visible(fn (Get $get) => $get('use_preprinted_remito'))
+                                    ->helperText('Modificá este valor (ej: 12.5 o 13) para hacer que el texto baje o suba y encaje perfecto justo debajo del diseño azul de tu hoja.'),
+                            ])
                     ])
                     ->action(function (array $data) {
                         $settings = \App\Models\Setting::firstOrCreate(['id' => 1]);
                         $settings->update($data);
-                        Notification::make()->success()->title('Talonario Actualizado')->send();
+                        Notification::make()->success()->title('Talonario e Impresión Actualizados')->send();
                     })
                     ->modalWidth('md'),
                     
