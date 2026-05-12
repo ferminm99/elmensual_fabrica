@@ -65,6 +65,21 @@
             </table>
         </div>
 
+        {{-- ACÁ AGREGAMOS LA CONDICIÓN DE PAGO --}}
+        @php
+            $metodo = $order->payment_method ?? 'cta_cte';
+            $metodoTexto = match($metodo) {
+                'cta_cte' => 'CUENTA CORRIENTE',
+                'efectivo' => 'EFECTIVO (CONTADO)',
+                'transferencia' => 'TRANSFERENCIA BANCARIA',
+                'cheque' => 'CHEQUE',
+                default => 'CUENTA CORRIENTE'
+            };
+        @endphp
+        <div style="border-top: 1px solid #000; border-bottom: 1px solid #000; padding: 5px; margin-bottom: 15px; font-size: 10px;">
+            <strong>CONDICIÓN DE VENTA: </strong> {{ $metodoTexto }}
+        </div>
+
         <table class="items-table">
             <thead>
                 <tr>

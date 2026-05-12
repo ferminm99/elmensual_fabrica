@@ -24,15 +24,16 @@ class Order extends Model
         'locked_at',
         'order_date',
         'status',
-        'priority', // Nuevo
+        'priority', 
         'billing_type',
-        'billing_status', // Nuevo
+        'payment_method',
+        'billing_status', 
         'total_amount',
         'amount_paid',
-        'invoice_number',      // Nuevo
-        'credit_note_number',  // Nuevo
-        'invoiced_at',         // Nuevo
-        'delivered_at',        // Nuevo
+        'invoice_number',      
+        'credit_note_number',  
+        'invoiced_at',         
+        'delivered_at',        
     ];
 
     protected $casts = [

@@ -21,8 +21,11 @@ class OrderPicker extends Page
     protected static string $view = 'filament.pages.order-picker';
 
     public $activeOrderId = null; 
-    public $packedQuantities = []; 
-    public $extraQuantities = [];
+    public array $packedQuantities = []; 
+    public array $extraQuantities = [];
+    
+    // ACÁ AGREGAMOS LA VARIABLE
+    public $observations = null;
 
     public function getOrdersToProcessProperty()
     {
@@ -41,12 +44,10 @@ class OrderPicker extends Page
             ->get();
     }
 
-    // NUEVO: Trae pedidos cancelados que el armador aún no confirmó haber desarmado
     public function getOrdersToDisassembleProperty()
     {
         return Order::where('status', OrderStatus::Cancelled)
             ->whereHas('items', function($q) {
-                // Si la cantidad armada es mayor a 0, significa que la caja sigue físicamente armada
                 $q->where('packed_quantity', '>', 0); 
             })
             ->with(['client.locality'])
@@ -103,11 +104,7 @@ class OrderPicker extends Page
         $this->activeOrderId = null;
         $this->packedQuantities = [];
         $this->extraQuantities = [];
-    }
-    
-    public function clearOrder()
-    {
-        $this->resetOrder();
+        $this->observations = null; // LIMPIAMOS
     }
 
     public function loadOrderData()
@@ -115,10 +112,21 @@ class OrderPicker extends Page
         $order = $this->getActiveOrderProperty();
         $this->packedQuantities = [];
         $this->extraQuantities = [];
+        $this->observations = null;
 
         if ($order) {
+            // CARGAMOS LO QUE HAYA ESCRITO EL ARMADOR
+            $this->observations = $order->observations;
+            
+            $status = $order->status instanceof \BackedEnum ? $order->status->value : $order->status;
+            $esNuevo = in_array($status, ['draft', 'processing']);
+
             foreach ($order->items as $item) {
-                $this->packedQuantities[$item->id] = $item->packed_quantity;
+                if ($esNuevo && $item->packed_quantity == 0) {
+                    $this->packedQuantities[$item->id] = null;
+                } else {
+                    $this->packedQuantities[$item->id] = $item->packed_quantity;
+                }
             }
         }
     }
@@ -162,8 +170,8 @@ class OrderPicker extends Page
                 foreach ($fixedItems as $item) {
                     $cId = $item->real_color_id ?? 'null';
                     $sId = $item->real_size_id ?? 'null';
-                    $currentPack = $this->packedQuantities[$item->id] ?? $item->packed_quantity; 
-
+                    $currentPack = $this->packedQuantities[$item->id] ?? null; 
+                    
                     $grid['c_' . $cId]['s_' . $sId] = [
                         'id' => $item->id,
                         'original_req' => (int)$item->quantity,
@@ -189,7 +197,7 @@ class OrderPicker extends Page
             ->filter(); 
     }
 
-    public function saveProgress()
+    public function finalizeOrder()
     {
         DB::transaction(function () {
             foreach ($this->packedQuantities as $itemId => $qty) {
@@ -201,12 +209,13 @@ class OrderPicker extends Page
             }
 
             foreach ($this->extraQuantities as $key => $qty) {
-                if ((int)$qty > 0) {
+                if ($qty !== '' && $qty !== null && (int)$qty > 0) {
                     $parts = explode('_', $key); 
                     if (count($parts) === 3) {
                         $articleId = $parts[0];
                         $colorId = ($parts[1] === 'null') ? null : $parts[1];
                         $sizeId = ($parts[2] === 'null') ? null : $parts[2];
+                        
                         $sku = Sku::where('article_id', $articleId)->where('color_id', $colorId)->where('size_id', $sizeId)->first();
 
                         OrderItem::create([
@@ -214,50 +223,36 @@ class OrderPicker extends Page
                             'article_id' => $articleId,
                             'sku_id' => $sku?->id,
                             'color_id' => $colorId,
-                            'size_id' => $sizeId,
                             'quantity' => 0, 
-                            'packed_quantity' => $qty,
+                            'packed_quantity' => (int)$qty, 
                             'unit_price' => $sku ? $sku->article->base_cost : 0,
+                            'subtotal' => 0 
                         ]);
                     }
                 }
             }
-        });
-
-        $this->extraQuantities = [];
-        $this->loadOrderData();
-        Notification::make()->title('Progreso Guardado')->success()->send();
-    }
-
-    public function finalizeOrder()
-    {
-        $this->saveProgress();
-        if ($this->activeOrderId) {
+            
+            // ACÁ GUARDAMOS LA OBSERVACIÓN Y EL ESTADO
             Order::where('id', $this->activeOrderId)->update([
+                'observations' => $this->observations,
                 'status' => OrderStatus::Assembled,
                 'locked_by' => null, 
                 'locked_at' => null
             ]); 
-            Notification::make()->title('Pedido Finalizado')->success()->send();
-            $this->resetOrder();
-        }
+        });
+
+        Notification::make()->title('Pedido Armado y Guardado')->success()->send();
+        $this->resetOrder();
     }
 
-    // NUEVO: El armador confirma que vació la caja del pedido cancelado
     public function markAsDisassembled($orderId)
     {
         DB::transaction(function () use ($orderId) {
             $order = Order::find($orderId);
             if ($order) {
-                // Para que el armador sepa que ya lo desarmó, seteamos las cantidades empaquetadas a 0
-                // (El stock real se devuelve a través de tu trigger de DB que ya tenías armado para las NC/Cancelaciones)
                 $order->items()->update(['packed_quantity' => 0]);
-                
-                // Marcamos el pedido como "desarmado" (usando un campo provisorio si lo tienes, o simplemente confía en que packed_quantity = 0 lo saca de la vista)
-                // Si no tienes columna 'disassembled_at', el WhereHas('packed_quantity', '>', 0) en la query principal ya lo hará desaparecer.
             }
         });
-
         Notification::make()->title('Caja Vaciada Correctamente')->success()->send();
     }
 }

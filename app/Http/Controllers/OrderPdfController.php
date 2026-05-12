@@ -39,7 +39,7 @@ class OrderPdfController extends Controller
 
         foreach ($itemsAgrupados as $articleId => $items) {
             $first = $items->first();
-            $qty = $items->sum(fn($i) => $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity);
+            $qty = $items->sum('packed_quantity');
             if ($qty <= 0) continue;
 
             // REGLA: Si el pedido es mixto, la Factura/NC siempre muestra el 50%
@@ -134,7 +134,7 @@ class OrderPdfController extends Controller
 
         foreach ($itemsAgrupados as $articleId => $items) {
             $first = $items->first();
-            $qty = $items->sum(fn($i) => $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity);
+            $qty = $items->sum('packed_quantity');
             if ($qty <= 0) continue;
 
             // En el remito fiscal de pedido mixto, mostramos el 50%
@@ -181,14 +181,14 @@ class OrderPdfController extends Controller
 
         foreach ($itemsAgrupados as $articleId => $items) {
             $first = $items->first();
-            $qty = $items->sum(fn($i) => $i->packed_quantity > 0 ? $i->packed_quantity : $i->quantity);
+            $qty = $items->sum('packed_quantity');
             if ($qty <= 0) continue;
 
             $price = $items->max('unit_price');
             $subtotal = $qty * $price;
             $totalPresupuesto += $subtotal;
 
-            $itemsParaPresupuesto[] = [
+            $itemsParaPresupuesto[] = [ 
                 'code'     => $first->article->code ?? 'S/C',
                 'article'  => $first->article->name,
                 'qty'      => $qty,

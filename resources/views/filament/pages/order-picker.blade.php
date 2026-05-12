@@ -2,24 +2,24 @@
     <style>
         input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
         input[type=number] { -moz-appearance: textfield; }
-        .sq-input { width: 48px !important; height: 38px !important; text-align: center; border-radius: 6px; font-size: 14px; outline: none; transition: all 0.2s; font-weight: bold; }
+        .sq-input { width: 48px !important; height: 38px !important; text-align: center; border-radius: 6px; font-size: 14px; outline: none; transition: all 0.2s; font-weight: bold; border: 2px solid transparent; }
         
-        /* FIX MODO OSCURO: Agregamos variantes dark para que el texto y fondo contrasten siempre */
-        .st-pending { background-color: #fffbeb !important; border: 2px solid #fbbf24 !important; color: #92400e !important; }
-        .dark .st-pending { background-color: #451a03 !important; border-color: #fbbf24 !important; color: #fbbf24 !important; }
+        .sq-input::placeholder { color: #9ca3af; font-weight: 900; opacity: 0.6; }
         
-        .st-ok { background-color: #dcfce7 !important; border: 2px solid #16a34a !important; color: #14532d !important; }
+        .st-pending { background-color: #fef3c7 !important; border: 2px solid #fbbf24 !important; color: #92400e !important; }
+        .dark .st-pending { background-color: #451a03 !important; border-color: #b45309 !important; color: #fbbf24 !important; }
+        
+        .st-ok { background-color: #dcfce7 !important; border: 2px solid #22c55e !important; color: #15803d !important; }
         .dark .st-ok { background-color: #064e3b !important; border-color: #10b981 !important; color: #34d399 !important; }
         
         .st-diff { background-color: #fee2e2 !important; border: 2px solid #ef4444 !important; color: #b91c1c !important; }
         .dark .st-diff { background-color: #450a0a !important; border-color: #dc2626 !important; color: #f87171 !important; }
         
-        .st-new { background-color: #bfdbfe !important; border: 2px solid #3b82f6 !important; color: #1e40af !important; }
-        .dark .st-new { background-color: #172554 !important; border-color: #3b82f6 !important; color: #93c5fd !important; }
-
-        .st-extra { background-color: #f9fafb; border: 1px solid #e5e7eb; color: #374151; }
-        .dark .st-extra { background-color: #1e293b; border: 1px solid #334155; color: #94a3b8; }
-        .st-extra:focus { background-color: #fff; border-color: #3b82f6; }
+        .st-extra { background-color: #f3f4f6 !important; border: 1px solid #d1d5db !important; color: #374151 !important; }
+        .dark .st-extra { background-color: #1e293b !important; border: 1px solid #334155 !important; color: #94a3b8 !important; }
+        
+        .st-new { background-color: #dbeafe !important; border: 2px solid #3b82f6 !important; color: #1e3a8a !important; }
+        .dark .st-new { background-color: #172554 !important; border-color: #2563eb !important; color: #60a5fa !important; }
     </style>
 
     <div class="min-h-screen pb-12" @if($activeOrderId) wire:poll.60s="keepAlive" @endif>
@@ -47,28 +47,24 @@
                             };
                         @endphp
 
-                        <div wire:click="selectOrder({{ $order->id }})" 
-                            class="group cursor-pointer relative overflow-hidden rounded-xl p-4 shadow-sm transition-all hover:shadow-md hover:scale-[1.02] {{ $priorityClass }}">
-                            
+                        <div wire:click="selectOrder({{ $order->id }})" class="group cursor-pointer relative overflow-hidden rounded-xl p-4 shadow-sm transition-all hover:shadow-md hover:scale-[1.02] {{ $priorityClass }}">
                             <div class="flex justify-between items-start mb-2">
                                 <div>
-                                    <h3 class="text-2xl font-black text-gray-900 dark:text-white">#{{ $order->id }}</h3>
+                                    <h3 class="text-2xl font-black text-gray-900 dark:text-white">
+                                        #{{ $order->id }}
+                                        @if($order->parent_id)
+                                            <span class="text-sm font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full ml-2 align-middle border border-purple-200">HIJO DE #{{ $order->parent_id }}</span>
+                                        @endif
+                                    </h3>
                                     <p class="font-bold text-lg text-gray-700 dark:text-gray-300 truncate leading-tight">{{ $order->client->name ?? 'S/N' }}</p>
                                 </div>
                                 {!! $priorityBadge !!}
                             </div>
-                            
                             <div class="mt-3 flex flex-wrap gap-2">
                                 <span class="inline-flex items-center px-2 py-1 rounded text-xs font-bold bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
                                     <x-heroicon-m-map-pin class="w-3 h-3 mr-1"/> {{ $order->client->locality->name ?? 'Sin Loc' }}
                                 </span>
-                                @if($order->client->locality?->zone)
-                                    <span class="inline-flex items-center px-2 py-1 rounded text-xs font-bold bg-purple-100 dark:bg-purple-900/40 text-purple-800 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
-                                        <x-heroicon-m-globe-americas class="w-3 h-3 mr-1"/> {{ $order->client->locality->zone->name }}
-                                    </span>
-                                @endif
                             </div>
-
                             <div class="mt-2 text-xs text-gray-400 dark:text-gray-500 flex justify-between pt-2 border-t border-gray-200/50 dark:border-gray-700">
                                 <span>{{ $order->items->count() }} ítems</span>
                                 <span>{{ $order->order_date->format('d/m/Y') }}</span>
@@ -76,11 +72,7 @@
                         </div>
                     @empty 
                         <div class="col-span-full py-12 text-center">
-                            <div class="flex justify-center mb-4">
-                                <div class="p-4 bg-gray-50 dark:bg-gray-800 rounded-full">
-                                    <x-heroicon-o-check-circle class="w-12 h-12 text-gray-300 dark:text-gray-600"/>
-                                </div>
-                            </div>
+                            <div class="flex justify-center mb-4"><div class="p-4 bg-gray-50 dark:bg-gray-800 rounded-full"><x-heroicon-o-check-circle class="w-12 h-12 text-gray-300 dark:text-gray-600"/></div></div>
                             <h3 class="text-lg font-medium text-gray-900 dark:text-white">Todo listo por hoy</h3>
                             <p class="text-gray-500 dark:text-gray-400">No hay pedidos pendientes de preparación.</p>
                         </div> 
@@ -101,48 +93,50 @@
                             <div wire:click="selectOrder({{ $order->id }})" class="cursor-pointer rounded-xl bg-white dark:bg-gray-800 p-4 shadow-sm ring-1 ring-gray-200 dark:ring-gray-700 transition-all hover:ring-green-500">
                                 <div class="flex justify-between items-start mb-2">
                                     <div>
-                                        <h3 class="text-lg font-bold text-gray-600 dark:text-gray-300">#{{ $order->id }}</h3>
+                                        <h3 class="text-lg font-bold text-gray-600 dark:text-gray-300">
+                                            #{{ $order->id }}
+                                            @if($order->parent_id)
+                                                <span class="text-[10px] font-bold text-purple-600 bg-purple-100 px-1.5 py-0.5 rounded-full ml-1">HIJO #{{ $order->parent_id }}</span>
+                                            @endif
+                                        </h3>
                                         <p class="font-medium text-gray-600 dark:text-gray-400 truncate">{{ $order->client->name ?? 'S/N' }}</p>
                                     </div>
                                     <span class="bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300 text-[10px] font-bold px-2 py-1 rounded uppercase flex items-center gap-1"><x-heroicon-m-check class="w-3 h-3"/> LISTO</span>
                                 </div>
-                                <div class="mt-2 text-xs text-gray-500">
-                                    {{ $order->client->locality->name ?? '-' }} 
-                                    @if($order->client->locality?->zone) - {{ $order->client->locality->zone->name }} @endif
-                                </div>
+                                <div class="mt-2 text-xs text-gray-500">{{ $order->client->locality->name ?? '-' }}</div>
                             </div>
                         @endforeach
                     </div>
                 </div>
             @endif
 
-            {{-- NUEVA SECCIÓN: LISTA DE CANCELADOS A DESARMAR --}}
+            {{-- LISTA DE CANCELADOS A DESARMAR --}}
             @if($this->ordersToDisassemble->count() > 0)
                 <div class="mb-12">
                     <div class="flex items-center gap-3 mb-4 border-b border-red-200 dark:border-red-900/50 pb-2">
-                        <span class="flex h-8 w-8 items-center justify-center rounded-full bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-500">
-                            <x-heroicon-m-archive-box-x-mark class="h-5 w-5 animate-pulse" />
-                        </span>
+                        <span class="flex h-8 w-8 items-center justify-center rounded-full bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-500"><x-heroicon-m-archive-box-x-mark class="h-5 w-5 animate-pulse" /></span>
                         <h2 class="text-xl font-black text-red-700 dark:text-red-400 uppercase">PARA DESARMAR (CANCELADOS)</h2>
                         <span class="rounded-full bg-red-100 dark:bg-red-900 px-2.5 py-0.5 text-xs font-bold text-red-800 dark:text-red-300">{{ $this->ordersToDisassemble->count() }}</span>
                     </div>
                     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         @foreach($this->ordersToDisassemble as $order)
-                            @php
-                                $totalToReturn = $order->items->sum('packed_quantity');
-                            @endphp
+                            @php $totalToReturn = $order->items->sum('packed_quantity'); @endphp
                             <div class="relative overflow-hidden rounded-xl bg-red-50 dark:bg-red-950/20 p-4 shadow-sm ring-2 ring-red-400 dark:ring-red-900">
                                 <div class="flex justify-between items-start mb-2">
                                     <div>
-                                        <h3 class="text-xl font-black text-red-900 dark:text-red-400">#{{ $order->id }} <span class="text-sm font-normal">({{ $order->client->name }})</span></h3>
+                                        <h3 class="text-xl font-black text-red-900 dark:text-red-400">
+                                            #{{ $order->id }} 
+                                            @if($order->parent_id)
+                                                <span class="text-sm font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full mx-1">HIJO DE #{{ $order->parent_id }}</span>
+                                            @endif
+                                            <span class="text-sm font-normal">({{ $order->client->name }})</span>
+                                        </h3>
                                         <p class="font-bold text-red-700 dark:text-red-300 mt-1">Devolver al estante: {{ $totalToReturn }} prendas</p>
                                     </div>
                                     <span class="bg-red-600 text-white text-[10px] font-black px-2 py-1 rounded uppercase flex items-center gap-1"><x-heroicon-m-x-circle class="w-3 h-3"/> ANULADO</span>
                                 </div>
                                 <div class="mt-4 flex justify-end">
-                                    <x-filament::button wire:click="markAsDisassembled({{ $order->id }})" color="danger" size="sm" icon="heroicon-m-check">
-                                        Confirmar Caja Vaciada
-                                    </x-filament::button>
+                                    <x-filament::button wire:click="markAsDisassembled({{ $order->id }})" color="danger" size="sm" icon="heroicon-m-check">Confirmar Caja Vaciada</x-filament::button>
                                 </div>
                             </div>
                         @endforeach
@@ -159,17 +153,29 @@
                         <div class="truncate">
                             <h2 class="text-lg font-bold dark:text-white truncate">{{ $this->activeOrder->client->name }}</h2>
                             <p class="text-xs text-gray-500 font-bold">
-                                #{{ $this->activeOrder->id }} &bull; 
-                                {{ $this->activeOrder->client->locality->name ?? '' }}
-                                @if($this->activeOrder->client->locality?->zone) 
-                                    &bull; {{ $this->activeOrder->client->locality->zone->name }}
+                                #{{ $this->activeOrder->id }} 
+                                @if($this->activeOrder->parent_id)
+                                    <span class="text-purple-600 bg-purple-100 px-1.5 py-0.5 rounded-md ml-1 border border-purple-200 uppercase">Parte de #{{ $this->activeOrder->parent_id }}</span>
                                 @endif
                             </p>
                         </div>
                     </div>
                     <div class="flex gap-2 shrink-0">
-                        <x-filament::button wire:click="saveProgress" color="gray" size="xs">Guardar</x-filament::button>
-                        <x-filament::button wire:click="finalizeOrder" color="success" size="xs">{{ $this->activeOrder->status === \App\Enums\OrderStatus::Assembled ? 'Actualizar' : 'Finalizar' }}</x-filament::button>
+                        <x-filament::button 
+                            color="success" size="md" icon="heroicon-m-check"
+                            @click="
+                                let pendientes = document.querySelectorAll('.st-pending').length;
+                                if(pendientes > 0) {
+                                    if(confirm('Tenés ' + pendientes + ' talles vacíos sin marcar. Se guardarán como 0 prendas. ¿Confirmar armado?')) {
+                                        $wire.finalizeOrder();
+                                    }
+                                } else {
+                                    $wire.finalizeOrder();
+                                }
+                            "
+                        >
+                            Finalizar Armado
+                        </x-filament::button>
                     </div>
                 </div>
 
@@ -184,39 +190,52 @@
                                 <table class="w-auto text-xs border-collapse mx-auto text-center">
                                     <thead>
                                         <tr class="border-b border-gray-200 dark:border-gray-700">
-                                            <th class="p-2 w-24 text-left font-medium text-gray-500 dark:text-gray-400 sticky left-0 bg-white dark:bg-gray-900 z-10 uppercase">Variante</th>
-                                            @foreach($group['sizes'] as $size) <th class="p-2 w-12 text-center font-bold text-gray-700 dark:text-gray-300 border-l dark:border-gray-800">{{ $size['name'] }}</th> @endforeach
+                                            <th class="p-2 w-24 text-left font-medium sticky left-0 bg-white dark:bg-gray-900 z-10">Variante</th>
+                                            @foreach($group['sizes'] as $size) <th class="p-2 w-16 text-center font-bold">{{ $size['name'] }}</th> @endforeach
                                         </tr>
                                     </thead>
-                                    <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
+                                    <tbody>
                                         @foreach($group['colors'] as $color)
                                             <tr>
                                                 <td class="p-2 text-left sticky left-0 bg-white dark:bg-gray-900 z-10 border-r border-gray-100 dark:border-gray-700">
-                                                    <div class="flex items-center gap-2"><div class="w-3 h-3 rounded-full border shadow-sm dark:border-white/20" style="background-color: {{ $color['hex'] }}"></div><span class="font-medium truncate w-20 dark:text-gray-200 uppercase">{{ $color['name'] }}</span></div>
+                                                    <div class="flex items-center gap-2">
+                                                        <div class="w-3 h-3 rounded-full border" style="background-color: {{ $color['hex'] }}"></div>
+                                                        <span class="font-medium truncate w-20 uppercase">{{ $color['name'] }}</span>
+                                                    </div>
                                                 </td>
                                                 @foreach($group['sizes'] as $size)
                                                     <td class="p-1 text-center border-l dark:border-gray-800">
                                                         @php $itemData = $group['grid']['c_'.$color['id']]['s_'.$size['id']] ?? null; @endphp
+                                                        
                                                         @if($itemData)
                                                             @php
                                                                 $val = $packedQuantities[$itemData['id']] ?? null; 
-                                                                $req = $itemData['original_req']; 
-                                                                if (empty($val) && $val !== 0 && $val !== '0') $class = 'st-pending';
-                                                                elseif ((int)$val === (int)$req) $class = 'st-ok';
-                                                                else $class = 'st-diff';
+                                                                $req = (int) $itemData['original_req']; 
                                                             @endphp
-                                                            <div class="flex justify-center relative">
-                                                                <input type="number" placeholder="{{ $req }}" wire:model.live.debounce.500ms="packedQuantities.{{ $itemData['id'] }}" class="sq-input {{ $class }}">
-                                                                @if((int)$val !== (int)$req && !empty($val)) <div class="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"></div> @endif
+                                                            <div class="flex justify-center relative" x-data="{ current: @js($val), req: {{ $req }} }">
+                                                                <input type="number" 
+                                                                       placeholder="{{ $req }}" 
+                                                                       wire:model.live.debounce.500ms="packedQuantities.{{ $itemData['id'] }}" 
+                                                                       x-model="current"
+                                                                       :class="{
+                                                                           'st-pending': current === '' || current === null,
+                                                                           'st-ok': current !== '' && current !== null && parseInt(current) === req,
+                                                                           'st-diff': current !== '' && current !== null && parseInt(current) !== req
+                                                                       }"
+                                                                       class="sq-input">
                                                             </div>
                                                         @else
                                                             @php
                                                                 $extraKey = $group['article_id'] . '_' . $color['id'] . '_' . $size['id'];
-                                                                $qtyExtra = $extraQuantities[$extraKey] ?? 0;
-                                                                $extraClass = (int)$qtyExtra > 0 ? 'st-new' : 'st-extra';
+                                                                $qtyExtra = $extraQuantities[$extraKey] ?? null;
                                                             @endphp
-                                                            <div class="flex justify-center relative">
-                                                                <input type="number" placeholder="-" wire:model.live.debounce.500ms="extraQuantities.{{ $extraKey }}" class="sq-input {{ $extraClass }}">
+                                                            <div class="flex justify-center relative" x-data="{ current: @js($qtyExtra) }">
+                                                                <input type="number" 
+                                                                       placeholder="-" 
+                                                                       wire:model.live.debounce.500ms="extraQuantities.{{ $extraKey }}" 
+                                                                       x-model="current"
+                                                                       :class="current !== '' && current !== null && parseInt(current) > 0 ? 'st-new' : 'st-extra'"
+                                                                       class="sq-input">
                                                             </div>
                                                         @endif
                                                     </td>
@@ -228,6 +247,20 @@
                             </div>
                         </div>
                     @endforeach
+                </div>
+
+                {{-- EL CAMPO DE OBSERVACIONES AL FINAL DE LA MATRIZ --}}
+                <div class="mt-6 bg-white dark:bg-gray-900 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
+                    <label class="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2 flex items-center gap-2">
+                        <x-heroicon-m-chat-bubble-bottom-center-text class="w-5 h-5 text-gray-400"/> 
+                        Observaciones del Armador (Opcional)
+                    </label>
+                    <textarea 
+                        wire:model.live="observations" 
+                        class="w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-800 dark:text-white shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm" 
+                        rows="3" 
+                        placeholder="Ej: Le mandé una bombacha blanca talle 44 en vez de la crema porque no había stock..."
+                    ></textarea>
                 </div>
             </div>
         @endif
